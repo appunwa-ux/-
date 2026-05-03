@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
 import { 
   Calculator as CalcIcon, 
   TrendingUp, 
@@ -51,6 +53,7 @@ interface CalculationResult {
   totalProfit: number;
   roi: number;
   breakEvenPrice: number;
+  capitalGainsTax: number;
 }
 
 // --- Helper Components ---
@@ -180,11 +183,41 @@ export default function App() {
   const [legalFeeRate, setLegalFeeRate] = useState(0.5); // 0.5% (법무비용)
   const [repairCosts, setRepairCosts] = useState(10000000); // 1000만
   const [expectedResalePrice, setExpectedResalePrice] = useState(550000000); // 5.5억
-  const [holdingPeriod, setHoldingPeriod] = useState(12); // 12개월
+  const [loanPeriod, setLoanPeriod] = useState(12); // 대출 이자 지불 기간 (개월)
+  const [holdingDuration, setHoldingDuration] = useState(24); // 실제 보유 기간 (개월)
   const [propertyType, setPropertyType] = useState<PropertyType>("RESIDENTIAL");
   const [houseCount, setHouseCount] = useState<HouseCount>(1);
+  const [isFirstHomeBuyer, setIsFirstHomeBuyer] = useState(false);
+  const [isTaxExempt, setIsTaxExempt] = useState(false);
   const [regionType, setRegionType] = useState<RegionType>("NORMAL");
   const [isAutoTax, setIsAutoTax] = useState(true);
+  const [isAutoLoan, setIsAutoLoan] = useState(true);
+  const [inputTab, setInputTab] = useState<"FINANCE" | "SALE">("FINANCE");
+
+  const reportRef = useRef<HTMLDivElement>(null);
+
+  // PDF Export Function
+  const handleDownloadPDF = async () => {
+    if (!reportRef.current) return;
+    try {
+      const canvas = await html2canvas(reportRef.current, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: "#f8fafc" // bg-slate-50
+      });
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF("p", "mm", "a4");
+      const imgProps = pdf.getImageProperties(imgData);
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+      
+      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`경매_분석_리포트_${new Date().toISOString().slice(0,10)}.pdf`);
+    } catch (error) {
+      console.error("PDF generation failed:", error);
+    }
+  };
 
   // Automatic Tax Calculation Logic (2026 Table)
   const applyAutoTax = React.useCallback((type: PropertyType, price: number, houses: HouseCount, region: RegionType) => {
@@ -237,16 +270,120 @@ export default function App() {
     const legalFees = Math.floor(bidPrice * (legalFeeRate / 100));
     const totalAcquisitionCost = bidPrice + acquisitionTax + legalFees + repairCosts;
     
-    const loanAmount = Math.floor(bidPrice * (loanRatio / 100));
-    const equityNeeded = totalAcquisitionCost - loanAmount;
+    // LTV Logic based on 2026 Table (Caps based on property value)
+    let baseLtvLimit = regionType === "ADJUSTED" ? 50 : 70;
+    let absoluteLoanCap = Infinity;
+
+    if (propertyType === "RESIDENTIAL") {
+      if (isFirstHomeBuyer) {
+        baseLtvLimit = 80;
+        absoluteLoanCap = 600000000; // 6억
+      } else if (houseCount === 1) {
+        // Absolute limits based on price (Tiered caps)
+        const priceTier = appraisalValue; 
+        if (priceTier > 2500000000) absoluteLoanCap = 200000000;
+        else if (priceTier > 1500000000) absoluteLoanCap = 400000000;
+        else if (priceTier > 900000000) absoluteLoanCap = 600000000;
+        
+        if (regionType === "ADJUSTED") baseLtvLimit = 50;
+      } else {
+        // Multi-house
+        baseLtvLimit = regionType === "ADJUSTED" ? 0 : 60;
+      }
+    } else {
+      baseLtvLimit = 80;
+    }
+
+    // Maximum loan amount allowed by regulation
+    const maxLoanByRatio = bidPrice * (baseLtvLimit / 100);
+    const regulatedMaxLoan = Math.min(maxLoanByRatio, absoluteLoanCap);
     
-    const monthlyInterest = Math.floor((loanAmount * (interestRate / 100)) / 12);
-    const totalInterest = monthlyInterest * holdingPeriod;
+    // Final loan amount selection
+    const requestedLoanAmount = bidPrice * (loanRatio / 100);
+    const finalLoanAmount = Math.floor(isAutoLoan ? Math.min(requestedLoanAmount, regulatedMaxLoan) : requestedLoanAmount);
     
-    const totalProfit = expectedResalePrice - totalAcquisitionCost - totalInterest;
-    const roi = equityNeeded > 0 ? (totalProfit / equityNeeded) * 100 : 0;
+    // Reverse calculation: Everything not covered by the loan must be equity
+    const equityNeeded = totalAcquisitionCost - finalLoanAmount;
+    
+    const monthlyInterest = Math.floor((finalLoanAmount * (interestRate / 100)) / 12);
+    const totalInterest = monthlyInterest * loanPeriod;
     
     const breakEvenPrice = totalAcquisitionCost + totalInterest;
+    
+    // --- Capital Gains Tax Calculation (2026 Official Guide) ---
+    // Note: Interest is NOT a deductible expense for official tax calculation.
+    let capitalGainsTax = 0;
+    const deductibleExpenses = acquisitionTax + legalFees + repairCosts;
+    const acquisitionPriceForTax = bidPrice + deductibleExpenses;
+    const grossGain = expectedResalePrice - acquisitionPriceForTax; // 양도차익 (필요경비만 차감)
+    
+    if (grossGain > 0) {
+      let taxableProfit = grossGain;
+      let specialDeduction = 0;
+      const years = Math.floor(holdingDuration / 12);
+
+      if (isTaxExempt && holdingDuration >= 24) {
+        // 1세대 1주택 비과세 (12억 초과분만 안분하여 과세)
+        if (expectedResalePrice > 1200000000) {
+          const apportionedGain = grossGain * ((expectedResalePrice - 1200000000) / expectedResalePrice);
+          // 장기보유특별공제 (1주택 특례: 보유 4% + 거주 4%이나, 여기서는 보유기준 연 8%로 단순화 적용)
+          if (years >= 3) {
+            specialDeduction = apportionedGain * Math.min(0.8, years * 0.08);
+          }
+          taxableProfit = apportionedGain - specialDeduction;
+          // 기본공제 250만 원
+          capitalGainsTax = calculateProgressiveTax(Math.max(0, taxableProfit - 2500000));
+        } else {
+          capitalGainsTax = 0;
+        }
+      } else {
+        // 과세 대상 (단기보유 중과세 vs 일반과세)
+        if (years >= 3) {
+          // 일반 장기보유특별공제: 연 2% (최대 30%)
+          specialDeduction = grossGain * Math.min(0.3, years * 0.02);
+        }
+        taxableProfit = grossGain - specialDeduction;
+
+        if (propertyType === "RESIDENTIAL") {
+          if (holdingDuration < 12) {
+            capitalGainsTax = taxableProfit * 0.70;
+          } else if (holdingDuration < 24) {
+            capitalGainsTax = taxableProfit * 0.60;
+          } else {
+            capitalGainsTax = calculateProgressiveTax(Math.max(0, taxableProfit - 2500000));
+          }
+        } else {
+          // 기타 부동산 (상가, 토지 등)
+          if (holdingDuration < 12) {
+            capitalGainsTax = taxableProfit * 0.50;
+          } else if (holdingDuration < 24) {
+            capitalGainsTax = taxableProfit * 0.40;
+          } else {
+            capitalGainsTax = calculateProgressiveTax(Math.max(0, taxableProfit - 2500000));
+          }
+        }
+      }
+      // 지방소득세 10% 추가
+      capitalGainsTax = Math.floor(capitalGainsTax * 1.1);
+    }
+
+    function calculateProgressiveTax(profit: number) {
+      // 2026 Progressive Rates (Roughly standard across years)
+      if (profit <= 14000000) return profit * 0.06;
+      if (profit <= 50000000) return (profit * 0.15) - 1260000;
+      if (profit <= 88000000) return (profit * 0.24) - 5760000;
+      if (profit <= 150000000) return (profit * 0.35) - 15440000;
+      if (profit <= 300000000) return (profit * 0.38) - 19940000;
+      if (profit <= 500000000) return (profit * 0.40) - 25940000;
+      if (profit <= 1000000000) return (profit * 0.42) - 35940000;
+      return (profit * 0.45) - 65940000;
+    }
+
+    // 실제 순수익 = 매도가 - 총취득비용 - 대출이자 - 양도세
+    const totalProfit = expectedResalePrice - totalAcquisitionCost - totalInterest - capitalGainsTax;
+    
+    // ROI calculation based on the actual capital invested (equityNeeded)
+    const roi = equityNeeded > 0 ? (totalProfit / equityNeeded) * 100 : 0;
 
     return {
       bidPrice,
@@ -254,16 +391,17 @@ export default function App() {
       legalFees,
       repairCosts,
       totalAcquisitionCost,
-      loanAmount,
+      loanAmount: finalLoanAmount,
       equityNeeded,
       monthlyInterest,
       totalInterest,
       expectedResalePrice,
       totalProfit,
       roi,
-      breakEvenPrice
+      breakEvenPrice,
+      capitalGainsTax
     };
-  }, [bidPrice, loanRatio, interestRate, taxRate, legalFeeRate, repairCosts, expectedResalePrice, holdingPeriod]);
+  }, [bidPrice, loanRatio, interestRate, taxRate, legalFeeRate, repairCosts, expectedResalePrice, loanPeriod, holdingDuration, regionType, isFirstHomeBuyer, houseCount, isAutoLoan, propertyType, appraisalValue, isTaxExempt]);
 
   const chartData = useMemo(() => [
     { name: "낙찰가", value: results.bidPrice },
@@ -315,176 +453,292 @@ export default function App() {
           {/* Left: Inputs */}
           <div className="lg:col-span-4 space-y-6">
             <Card className="border-none shadow-xl bg-white/80 backdrop-blur-sm overflow-hidden">
-              <CardHeader className="bg-slate-900 text-white">
+              <CardHeader className="bg-slate-900 text-white pb-2">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Landmark className="w-5 h-5 text-blue-400" />
                   투자 조건 입력 (KRW)
                 </CardTitle>
-                <CardDescription className="text-slate-400">
-                  물건 정보와 예상 비용을 입력하세요.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="p-6 space-y-6">
-                <div className="space-y-3">
-                  <Label className="text-sm font-bold text-slate-700 flex items-center gap-2">
-                    <Home className="w-4 h-4 text-blue-500" />
-                    물건 종류 및 취득 조건
-                  </Label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { id: "RESIDENTIAL", label: "주택" },
-                      { id: "NON_RESIDENTIAL", label: "상가/토지" },
-                      { id: "FARMLAND", label: "농지" }
-                    ].map((type) => (
-                      <Button
-                        key={`property-type-${type.id}`}
-                        variant={propertyType === type.id ? "default" : "outline"}
-                        size="sm"
-                        className="text-[10px] px-1 h-8"
-                        onClick={() => {
-                          setPropertyType(type.id as PropertyType);
-                        }}
-                      >
-                        {type.label}
-                      </Button>
-                    ))}
-                  </div>
-
-                  {propertyType === "RESIDENTIAL" && (
-                    <div className="space-y-3 p-3 bg-slate-50 rounded-xl border border-slate-100 animate-in fade-in slide-in-from-top-1">
-                      <div className="space-y-1.5">
-                        <Label className="text-[10px] font-bold text-slate-500 uppercase">보유 주택 수 (취득 물건 포함)</Label>
-                        <div className="grid grid-cols-4 gap-1">
-                          {[1, 2, 3, 4].map((count) => (
-                            <Button
-                              key={`house-count-${count}`}
-                              variant={houseCount === count ? "default" : "outline"}
-                              size="sm"
-                              className="h-7 text-[10px]"
-                              onClick={() => setHouseCount(count as HouseCount)}
-                            >
-                              {count === 4 ? "4주택+" : `${count}주택`}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-[10px] font-bold text-slate-500 uppercase">지역 구분</Label>
-                        <div className="grid grid-cols-2 gap-1">
-                          <Button
-                            variant={regionType === "NORMAL" ? "default" : "outline"}
-                            size="sm"
-                            className="h-7 text-[10px]"
-                            onClick={() => setRegionType("NORMAL")}
-                          >
-                            비조정대상지역
-                          </Button>
-                          <Button
-                            variant={regionType === "ADJUSTED" ? "default" : "outline"}
-                            size="sm"
-                            className="h-7 text-[10px]"
-                            onClick={() => setRegionType("ADJUSTED")}
-                          >
-                            조정대상지역
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <Button 
-                    variant={isAutoTax ? "default" : "outline"} 
-                    size="sm" 
+                <div className="flex gap-1 mt-4 p-1 bg-slate-800 rounded-lg">
+                  <Button
+                    variant="ghost"
                     className={cn(
-                      "w-full text-[10px] h-7",
-                      isAutoTax ? "bg-blue-600 text-white" : "text-slate-400"
+                      "flex-1 h-8 text-[11px] font-bold rounded-md transition-all",
+                      inputTab === "FINANCE" ? "bg-slate-700 text-white shadow-sm" : "text-slate-400 hover:text-white"
                     )}
-                    onClick={() => setIsAutoTax(!isAutoTax)}
+                    onClick={() => setInputTab("FINANCE")}
                   >
-                    {isAutoTax ? "법정 세율 자동 적용 중" : "수동 입력 모드 (클릭하여 자동 적용)"}
+                    입찰 & 금융
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className={cn(
+                      "flex-1 h-8 text-[11px] font-bold rounded-md transition-all",
+                      inputTab === "SALE" ? "bg-slate-700 text-white shadow-sm" : "text-slate-400 hover:text-white"
+                    )}
+                    onClick={() => setInputTab("SALE")}
+                  >
+                    매도 & 세금
                   </Button>
                 </div>
+              </CardHeader>
+              <CardContent className="p-6 space-y-6">
+                {inputTab === "FINANCE" ? (
+                  <div className="space-y-6 animate-in fade-in slide-in-from-left-2 duration-300">
+                    <div className="space-y-3">
+                      <Label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                        <Home className="w-4 h-4 text-blue-500" />
+                        물건 종류 및 취득 조건
+                      </Label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { id: "RESIDENTIAL", label: "주택" },
+                          { id: "NON_RESIDENTIAL", label: "상가/토지" },
+                          { id: "FARMLAND", label: "농지" }
+                        ].map((type) => (
+                          <Button
+                            key={`property-type-${type.id}`}
+                            variant={propertyType === type.id ? "default" : "outline"}
+                            size="sm"
+                            className="text-[10px] px-1 h-8"
+                            onClick={() => setPropertyType(type.id as PropertyType)}
+                          >
+                            {type.label}
+                          </Button>
+                        ))}
+                      </div>
 
-                <Separator />
+                      {propertyType === "RESIDENTIAL" && (
+                        <div className="space-y-4 p-3 bg-slate-50 rounded-xl border border-slate-100 animate-in fade-in slide-in-from-top-1">
+                          <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                              <Label className="text-[10px] font-bold text-slate-500 uppercase">생애 최초 주택 구매</Label>
+                              <p className="text-[8px] text-slate-400">LTV 80% 상향 적용</p>
+                            </div>
+                            <Button
+                              variant={isFirstHomeBuyer ? "default" : "outline"}
+                              size="sm"
+                              className="h-6 px-2 text-[9px]"
+                              onClick={() => setIsFirstHomeBuyer(!isFirstHomeBuyer)}
+                            >
+                              {isFirstHomeBuyer ? "적용됨" : "미적용"}
+                            </Button>
+                          </div>
 
-                <NumericInput 
-                  label="감정가" 
-                  value={appraisalValue} 
-                  onChange={setAppraisalValue} 
-                  description="법원에서 평가한 물건의 가치입니다."
-                />
-                <NumericInput 
-                  label="최저매각가격" 
-                  value={minBidPrice} 
-                  onChange={setMinBidPrice} 
-                  description="이번 회차에서 입찰 가능한 최소 금액입니다."
-                />
-                <Separator />
-                <NumericInput 
-                  label="예상 낙찰가" 
-                  value={bidPrice} 
-                  onChange={setBidPrice} 
-                  description="본인이 입찰하고자 하는 금액입니다."
-                />
-                
-                <NumericInput 
-                  label="대출 비율 (LTV)" 
-                  value={loanRatio} 
-                  onChange={setLoanRatio} 
-                  suffix="%" 
-                  isPercentage
-                />
+                          <div className="space-y-1.5 border-t border-slate-200 pt-3">
+                            <Label className="text-[10px] font-bold text-slate-500 uppercase">보유 주택 수 (취득 물건 포함)</Label>
+                            <div className="grid grid-cols-4 gap-1">
+                              {[1, 2, 3, 4].map((count) => (
+                                <Button
+                                  key={`house-count-${count}`}
+                                  variant={houseCount === count ? "default" : "outline"}
+                                  size="sm"
+                                  disabled={isFirstHomeBuyer}
+                                  className="h-7 text-[10px]"
+                                  onClick={() => setHouseCount(count as HouseCount)}
+                                >
+                                  {count === 4 ? "4주택+" : `${count}주택`}
+                                </Button>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] font-bold text-slate-500 uppercase">지역 구분</Label>
+                            <div className="grid grid-cols-2 gap-1">
+                              <Button
+                                variant={regionType === "NORMAL" ? "default" : "outline"}
+                                size="sm"
+                                className="h-7 text-[10px]"
+                                onClick={() => setRegionType("NORMAL")}
+                              >
+                                비조정대상지역
+                              </Button>
+                              <Button
+                                variant={regionType === "ADJUSTED" ? "default" : "outline"}
+                                size="sm"
+                                className="h-7 text-[10px]"
+                                onClick={() => setRegionType("ADJUSTED")}
+                              >
+                                조정대상지역
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
-                <div className="grid grid-cols-2 gap-4">
-                  <NumericInput 
-                    label="대출 이자율" 
-                    value={interestRate} 
-                    onChange={setInterestRate} 
-                    suffix="%" 
-                    isPercentage
-                  />
-                  <NumericInput 
-                    label="보유 기간" 
-                    value={holdingPeriod} 
-                    onChange={setHoldingPeriod} 
-                    suffix="개월" 
-                  />
-                </div>
+                      <div className="flex flex-col gap-1">
+                        <Button 
+                          variant={isAutoLoan ? "default" : "outline"} 
+                          size="sm" 
+                          className={cn(
+                            "w-full text-[10px] h-7",
+                            isAutoLoan ? "bg-amber-600 text-white" : "text-slate-400"
+                          )}
+                          onClick={() => setIsAutoLoan(!isAutoLoan)}
+                        >
+                          {isAutoLoan ? "LTV 규정한도 자동 제한 적용 중" : "대출한도 수동 입력 모드"}
+                        </Button>
+                      </div>
+                    </div>
 
-                <Separator />
+                    <Separator />
 
-                <div className="grid grid-cols-2 gap-4">
-                  <NumericInput 
-                    label="취득세율" 
-                    value={taxRate} 
-                    onChange={setTaxRate} 
-                    suffix="%" 
-                    isPercentage
-                  />
-                  <NumericInput 
-                    label="법무/기타" 
-                    value={legalFeeRate} 
-                    onChange={setLegalFeeRate} 
-                    suffix="%" 
-                    isPercentage
-                  />
-                </div>
-                
-                <NumericInput 
-                  label="명도/수리비" 
-                  value={repairCosts} 
-                  onChange={setRepairCosts} 
-                />
-                
-                <Separator />
-                
-                <NumericInput 
-                  label="예상 매도가" 
-                  value={expectedResalePrice} 
-                  onChange={setExpectedResalePrice} 
-                  description="보유 기간 후 매도할 때의 예상 가격입니다."
-                />
-                <Separator />
+                    <div className="space-y-4">
+                      <NumericInput 
+                        label="감정가" 
+                        value={appraisalValue} 
+                        onChange={setAppraisalValue} 
+                        description="법원에서 평가한 물건의 가치입니다."
+                      />
+                      <NumericInput 
+                        label="최저매각가격" 
+                        value={minBidPrice} 
+                        onChange={setMinBidPrice} 
+                        description="이번 회차에서 입찰 가능한 최소 금액입니다."
+                      />
+                      <Separator />
+                      <NumericInput 
+                        label="예상 낙찰가" 
+                        value={bidPrice} 
+                        onChange={setBidPrice} 
+                        description="본인이 입찰하고자 하는 금액입니다."
+                      />
+                      
+                      <NumericInput 
+                        label="대출 비율 (LTV) 입력" 
+                        value={loanRatio} 
+                        onChange={setLoanRatio} 
+                        suffix="%" 
+                        isPercentage
+                      />
+                      <div className="flex justify-between items-center -mt-2 px-1">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase">규제 한도 내 대출금</span>
+                        <span className="text-[11px] font-bold text-amber-600">
+                          {new Intl.NumberFormat('ko-KR').format(results.loanAmount)} KRW
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <NumericInput 
+                          label="대출 이자율" 
+                          value={interestRate} 
+                          onChange={setInterestRate} 
+                          suffix="%" 
+                          isPercentage
+                        />
+                        <NumericInput 
+                          label="대출 기간" 
+                          value={loanPeriod} 
+                          onChange={setLoanPeriod} 
+                          suffix="개월" 
+                          description="이자 지불이 발생하는 총 기간입니다."
+                        />
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-4">
+                      <Label className="text-[10px] font-bold text-slate-500 uppercase">취득 경비 설정</Label>
+                      <div className="grid grid-cols-2 gap-4">
+                        <NumericInput 
+                          label="취득세율" 
+                          value={taxRate} 
+                          onChange={setTaxRate} 
+                          suffix="%" 
+                          isPercentage
+                        />
+                        <NumericInput 
+                          label="법무/기타" 
+                          value={legalFeeRate} 
+                          onChange={setLegalFeeRate} 
+                          suffix="%" 
+                          isPercentage
+                        />
+                      </div>
+                      <Button 
+                        variant={isAutoTax ? "default" : "outline"} 
+                        size="sm" 
+                        className={cn(
+                          "w-full text-[10px] h-7",
+                          isAutoTax ? "bg-blue-600 text-white" : "text-slate-400"
+                        )}
+                        onClick={() => setIsAutoTax(!isAutoTax)}
+                      >
+                        {isAutoTax ? "2026 취득세 자동 계산" : "취득세 수동 입력"}
+                      </Button>
+                      <NumericInput 
+                        label="명도/수리비" 
+                        value={repairCosts} 
+                        onChange={setRepairCosts} 
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-6 animate-in fade-in slide-in-from-right-2 duration-300">
+                    <div className="space-y-4">
+                      <NumericInput 
+                        label="예상 매도가" 
+                        value={expectedResalePrice} 
+                        onChange={setExpectedResalePrice} 
+                        description="보유 기간 후 매도할 때의 예상 가격입니다."
+                      />
+                      
+                      <NumericInput 
+                        label="보유 기간" 
+                        value={holdingDuration} 
+                        onChange={setHoldingDuration} 
+                        suffix="개월" 
+                        description="실지 보유 기간 (양도세 계산 기준)"
+                      />
+
+                      <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100">
+                        <div className="space-y-0.5">
+                          <Label className="text-[10px] font-bold text-slate-500 uppercase">1주택 비과세 대상</Label>
+                          <p className="text-[8px] text-slate-400">양도소득세 면제 (12억 이하 + 2년 보유)</p>
+                        </div>
+                        <Button
+                          variant={isTaxExempt ? "default" : "outline"}
+                          size="sm"
+                          className="h-6 px-2 text-[9px]"
+                          onClick={() => setIsTaxExempt(!isTaxExempt)}
+                        >
+                          {isTaxExempt ? "적용됨" : "미적용"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-100 space-y-3">
+                       <h4 className="text-[11px] font-bold text-blue-600 uppercase flex items-center gap-1.5">
+                         <Info className="w-3 h-3" />
+                         2026 양도소득세 적용 가이드
+                       </h4>
+                       <div className="space-y-2">
+                         <div className="flex justify-between text-[10px]">
+                           <span className="text-slate-500">보유 기간</span>
+                           <span className="font-bold text-slate-700">{Math.floor(holdingDuration / 12)}년 {holdingDuration % 12}개월</span>
+                         </div>
+                         <div className="flex justify-between text-[10px]">
+                           <span className="text-slate-500">적용 세율</span>
+                           <span className="font-bold text-slate-700">
+                             {holdingDuration < 12 ? (propertyType === "RESIDENTIAL" ? "70%" : "50%") : 
+                              holdingDuration < 24 ? (propertyType === "RESIDENTIAL" ? "60%" : "40%") : "일반과세 (6~45%)"}
+                           </span>
+                         </div>
+                         <div className="flex justify-between text-[10px]">
+                           <span className="text-slate-500">장기보유특별공제</span>
+                           <span className="font-bold text-blue-600">
+                             {holdingDuration < 36 ? "0% (3년 미만)" : isTaxExempt ? "연 8% (최대 80%)" : "연 2% (최대 30%)"}
+                           </span>
+                         </div>
+                       </div>
+                       <p className="text-[9px] text-slate-400 leading-tight">
+                         * 2026 국세청 기준을 적용하며, 지방소득세(10%)가 포함된 예상 세액입니다. 실제 세액은 필요경비 증빙에 따라 달라질 수 있습니다.
+                       </p>
+                    </div>
+                  </div>
+                )}
                 
                 <div className="space-y-4 pt-2">
                   <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider">
@@ -540,7 +794,7 @@ export default function App() {
           </div>
 
           {/* Right: Analysis */}
-          <div className="lg:col-span-8 space-y-6">
+          <div className="lg:col-span-8 space-y-6" ref={reportRef}>
             
             {/* Quick Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -599,7 +853,7 @@ export default function App() {
                   <div className="bg-white rounded-2xl p-2 shadow-sm border border-slate-100 flex flex-col gap-1">
                     <ResultItem label="낙찰가" value={results.bidPrice} />
                     <ResultItem label="취득세" value={results.acquisitionTax} subValue={`${taxRate}% 적용`} />
-                    <ResultItem label="금융(이자)" value={results.totalInterest} subValue={`${holdingPeriod}개월`} />
+                    <ResultItem label="금융(이자)" value={results.totalInterest} subValue={`${loanPeriod}개월`} />
                     <ResultItem label="수리/명도" value={results.repairCosts} />
                     <Separator className="my-1" />
                     <ResultItem label="총 취득가" value={results.totalAcquisitionCost} highlight />
@@ -737,6 +991,36 @@ export default function App() {
                       <CardTitle className="text-base font-bold">AI 투자 의견</CardTitle>
                     </div>
                     <div className="space-y-4">
+                      <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
+                        <div className="text-[10px] text-slate-500 uppercase font-bold mb-2 tracking-tighter">자본 구조 및 수익성 분석</div>
+                        <div className="space-y-2">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-400">대출한도 {isAutoLoan ? "(규제적용)" : ""}</span>
+                            <span className="text-slate-200">{new Intl.NumberFormat('ko-KR').format(results.loanAmount)} KRW</span>
+                          </div>
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-blue-400 font-bold">자기자본(투입)</span>
+                            <span className="text-blue-400 font-bold">{new Intl.NumberFormat('ko-KR').format(results.equityNeeded)} KRW</span>
+                          </div>
+                          <Separator className="bg-slate-700 my-1" />
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-400">양도소득세 {isTaxExempt ? "(비과세)" : ""}</span>
+                            <span className="text-red-400">{new Intl.NumberFormat('ko-KR').format(results.capitalGainsTax)} KRW</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs text-emerald-400 font-bold underline">실질 투자수익 (세후)</span>
+                            <span className={cn(
+                              "text-sm font-bold",
+                              results.totalProfit >= 0 ? "text-emerald-400" : "text-red-400"
+                            )}>
+                              {new Intl.NumberFormat('ko-KR').format(results.totalProfit)} KRW
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-slate-300 text-[11px] leading-relaxed italic opacity-80">
+                        * {regionType === "ADJUSTED" ? "조정대상지역" : "비조정대상지역"} 규제와 <span className="font-bold">{isTaxExempt ? "1주택 비과세" : "일반 과세"}</span> 조건을 반영했습니다. {holdingDuration}개월 보유 시 실질 투자수익률(ROI)은 <span className="text-emerald-400 font-bold">{results.roi.toFixed(1)}%</span> 입니다.
+                      </p>
                       <p className="text-slate-300 text-sm leading-relaxed">
                         {results.roi > 20 
                           ? "현재 예상 수익률은 매우 매력적인 수준입니다. 다만 입찰 전 명도 리스크와 인근 지역의 급매 가격을 반드시 교차 검증하시기 바랍니다."
@@ -746,22 +1030,14 @@ export default function App() {
                           ? "수익률이 상대적으로 낮아 리스크 대비 보상이 적을 수 있습니다. 비용 절감 요소를 찾거나 보수적인 입찰가 산정이 필요합니다."
                           : "분석 결과 손실 발생 가능성이 큽니다. 입찰가를 하향 조정하거나 물건의 하자 여부를 다시 검토하시는 것이 안전합니다."}
                       </p>
-                      <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
-                        <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">핵심 지표</div>
-                        <div className="flex justify-between items-center">
-                          <span className="text-xs text-slate-300">예상 순이익</span>
-                          <span className={cn(
-                            "text-sm font-bold",
-                            results.totalProfit >= 0 ? "text-emerald-400" : "text-red-400"
-                          )}>
-                            {new Intl.NumberFormat('ko-KR').format(results.totalProfit)} KRW
-                          </span>
-                        </div>
-                      </div>
                     </div>
                   </div>
                   <div className="p-6 bg-slate-800/30 border-t border-slate-800">
-                    <Button variant="default" className="w-full bg-blue-600 hover:bg-blue-500 font-bold h-11">
+                    <Button 
+                      variant="default" 
+                      className="w-full bg-blue-600 hover:bg-blue-500 font-bold h-11"
+                      onClick={handleDownloadPDF}
+                    >
                       상세 분석 리포트 PDF 저장
                       <ArrowRight className="w-4 h-4 ml-2" />
                     </Button>
