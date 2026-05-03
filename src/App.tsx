@@ -204,66 +204,77 @@ export default function App() {
   const handleDownloadPDF = async () => {
     if (!reportRef.current) return;
     setIsExporting(true);
+    const originalTab = inputTab;
     
     try {
-      // Scroll to top to ensure html2canvas captures correctly from the start
       window.scrollTo(0, 0);
-      
-      // Small delay to ensure any UI transitions or hovers are cleared
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      const element = reportRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        logging: true,
-        backgroundColor: "#f8fafc",
-        onclone: (doc) => {
-          // Hide all elements marked for exclusion
-          const ignored = doc.querySelectorAll('[data-pdf-ignore]');
-          ignored.forEach(el => (el as HTMLElement).style.display = 'none');
-          
-          // Ensure container has proper styling in cloned doc
-          const container = doc.querySelector('.max-w-7xl');
-          if (container) {
-            (container as HTMLElement).style.margin = '0';
-            (container as HTMLElement).style.padding = '30px';
-            (container as HTMLElement).style.width = '1200px';
-            (container as HTMLElement).style.maxWidth = 'none';
-          }
-        }
-      });
-
-      const imgData = canvas.toDataURL("image/png", 1.0);
       const pdf = new jsPDF({
-        orientation: 'p',
+        orientation: 'l',
         unit: 'mm',
         format: 'a4',
         compress: true
       });
-      
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
-      
-      // Calculate proportions to fit A4
-      const canvasWidth = canvas.width / 2; // back to original scale relative to 2x canvas
-      const canvasHeight = canvas.height / 2;
-      
-      const widthRatio = (pdfWidth - 20) / canvasWidth;
-      const finalWidth = canvasWidth * widthRatio;
-      const finalHeight = canvasHeight * widthRatio;
 
-      pdf.addImage(imgData, "PNG", 10, 10, finalWidth, finalHeight, undefined, 'FAST');
-      pdf.setProperties({
-        title: "경매 권리분석 리포트",
-        subject: "부동산 경매 수익률 분석 자료",
-        author: "AI Auction Pro"
-      });
+      const captureView = async (tab: "FINANCE" | "SALE") => {
+        setInputTab(tab);
+        await new Promise(resolve => setTimeout(resolve, 800)); // Longer wait for render
+
+        const element = reportRef.current;
+        if (!element) return null;
+
+        const canvas = await html2canvas(element, {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          backgroundColor: "#f8fafc",
+          onclone: (doc) => {
+            const ignored = doc.querySelectorAll('[data-pdf-ignore]');
+            ignored.forEach(el => (el as HTMLElement).style.display = 'none');
+            const container = doc.querySelector('.max-w-7xl');
+            if (container) {
+              (container as HTMLElement).style.margin = '0';
+              (container as HTMLElement).style.padding = '20px';
+              (container as HTMLElement).style.width = '1400px';
+              (container as HTMLElement).style.maxWidth = 'none';
+            }
+          }
+        });
+        return canvas;
+      };
+
+      // Page 1: Finance
+      const canvas1 = await captureView("FINANCE");
+      if (canvas1) {
+        const imgData1 = canvas1.toDataURL("image/png", 1.0);
+        // Use full width of A4 landscape
+        const finalWidth = pdfWidth - 20; 
+        const canvasWidth = canvas1.width / 2;
+        const canvasHeight = canvas1.height / 2;
+        const finalHeight = (canvasHeight * finalWidth) / canvasWidth;
+        
+        pdf.addImage(imgData1, "PNG", 10, 10, finalWidth, finalHeight, undefined, 'FAST');
+      }
+
+      // Page 2: Sale
+      pdf.addPage();
+      const canvas2 = await captureView("SALE");
+      if (canvas2) {
+        const imgData2 = canvas2.toDataURL("image/png", 1.0);
+        const finalWidth = pdfWidth - 20;
+        const canvasWidth = canvas2.width / 2;
+        const canvasHeight = canvas2.height / 2;
+        const finalHeight = (canvasHeight * finalWidth) / canvasWidth;
+        
+        pdf.addImage(imgData2, "PNG", 10, 10, finalWidth, finalHeight, undefined, 'FAST');
+      }
 
       pdf.save(`경매_분석_리포트_${new Date().toISOString().slice(0,10)}.pdf`);
     } catch (error) {
       console.error("PDF generation failed:", error);
     } finally {
+      setInputTab(originalTab);
       setIsExporting(false);
     }
   };
@@ -328,32 +339,33 @@ export default function App() {
         baseLtvLimit = 80;
         absoluteLoanCap = 600000000; // 생애최초 무주택자 최대 6억
       } else {
-        // Apply tiered absolute limits based on appraisal value as shown in common table
-        if (appraisalValue <= 900000000) {
-          absoluteLoanCap = Infinity; // 9억 이하
-        } else if (appraisalValue <= 1500000000) {
-          absoluteLoanCap = 600000000; // 9억 초과~15억 이하: 최대 6억
-        } else if (appraisalValue <= 2500000000) {
-          absoluteLoanCap = 400000000; // 15억 초과~25억 이하: 최대 4억
+        // Tiered caps for 1-house or no-house (Standard tiers)
+        if (houseCount <= 1) {
+          if (appraisalValue <= 900000000) {
+            absoluteLoanCap = Infinity; 
+          } else if (appraisalValue <= 1500000000) {
+            absoluteLoanCap = 600000000;
+          } else if (appraisalValue <= 2500000000) {
+            absoluteLoanCap = 400000000;
+          } else {
+            absoluteLoanCap = 200000000;
+          }
         } else {
-          absoluteLoanCap = 200000000; // 25억 초과: 최대 2억
+          absoluteLoanCap = Infinity;
         }
 
         if (regionType === "ADJUSTED") {
-          if (houseCount === 1) {
-            baseLtvLimit = 50; // 조정대상지역 1주택 50%
-            // Regional specific override for adjusted areas if requested
+          if (houseCount <= 1) {
+            baseLtvLimit = 50; 
             absoluteLoanCap = Math.min(absoluteLoanCap, 400000000); 
           } else {
-            baseLtvLimit = 0; // 다주택자 조정지역 대출 금지
+            baseLtvLimit = 0;
           }
         } else {
-          // 비조정대상지역 (사용자 제공 테이블 기준)
-          if (houseCount === 1) {
+          if (houseCount <= 1) {
             baseLtvLimit = 70;
           } else {
-            baseLtvLimit = 60; // 비조정 다주택 60%
-            absoluteLoanCap = Infinity; // Typically no specific tiered cap for multi-house if permitted
+            baseLtvLimit = 60;
           }
         }
       }
@@ -369,11 +381,13 @@ export default function App() {
     const requestedLoanAmount = bidPrice * (loanRatio / 100);
     const finalLoanAmount = Math.floor(isAutoLoan ? Math.min(requestedLoanAmount, regulatedMaxLoan) : requestedLoanAmount);
     
-    // Reverse calculation: Everything not covered by the loan must be equity
-    const equityNeeded = totalAcquisitionCost - finalLoanAmount;
-    
     const monthlyInterest = Math.floor((finalLoanAmount * (interestRate / 100)) / 12);
     const totalInterest = monthlyInterest * loanPeriod;
+
+    // --- Investment Capital (Actual Investment) ---
+    // User requested: 실투자금 = (입찰가 - 대출금) + 취득세 + 명도/수리비 + 법무비 + 금융이자
+    const initialEquity = totalAcquisitionCost - finalLoanAmount;
+    const equityNeeded = initialEquity + totalInterest;
     
     const breakEvenPrice = totalAcquisitionCost + totalInterest;
     
