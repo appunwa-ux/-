@@ -63,34 +63,64 @@ const NumericInput = ({
   value, 
   onChange, 
   suffix = "원", 
-  description
+  description,
+  withSlider = false,
+  min = 0,
+  max = 1000000000,
+  step = 1000000,
+  isPercentage = false
 }: { 
   label: string; 
   value: number; 
   onChange: (val: number) => void; 
   suffix?: string;
-  step?: number;
   description?: string;
+  withSlider?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  isPercentage?: boolean;
 }) => {
   const formatValue = (val: number) => {
     if (val === 0) return "0";
+    if (isPercentage) return val.toFixed(1);
     return new Intl.NumberFormat('ko-KR').format(val);
   };
 
+  const [inputValue, setInputValue] = React.useState(formatValue(value));
+  const isFocused = React.useRef(false);
+
+  React.useEffect(() => {
+    // Only sync from parent if not focused (to allow external updates like auto-tax)
+    if (!isFocused.current) {
+      setInputValue(formatValue(value));
+    }
+  }, [value, isPercentage]);
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Remove all non-numeric characters except for the first decimal point
     const rawValue = e.target.value.replace(/[^0-9.]/g, "");
-    
-    // Handle multiple decimal points
-    const parts = rawValue.split(".");
-    const sanitizedValue = parts[0] + (parts.length > 1 ? "." + parts[1] : "");
-    
-    const numValue = parseFloat(sanitizedValue);
+    setInputValue(rawValue);
+
+    const numValue = parseFloat(rawValue);
     if (!isNaN(numValue)) {
-      onChange(numValue);
-    } else if (sanitizedValue === "" || sanitizedValue === ".") {
+      if (isPercentage && numValue > 100) {
+        onChange(100);
+      } else {
+        onChange(numValue);
+      }
+    } else if (rawValue === "") {
       onChange(0);
     }
+  };
+
+  const handleBlur = () => {
+    isFocused.current = false;
+    setInputValue(formatValue(value));
+  };
+
+  const handleFocus = (e: React.FocusEvent<HTMLInputElement>) => {
+    isFocused.current = true;
+    e.target.select();
   };
 
   return (
@@ -109,16 +139,31 @@ const NumericInput = ({
       <div className="relative">
         <Input
           type="text"
-          value={formatValue(value)}
+          value={inputValue}
           onChange={handleChange}
+          onBlur={handleBlur}
+          onFocus={handleFocus}
           className="pr-12 font-mono"
+          placeholder={isPercentage ? "0.0" : "0"}
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
           {suffix}
         </span>
       </div>
+      {withSlider && (
+        <div className="pt-2 pb-1">
+          <Slider 
+            value={[value]} 
+            onValueChange={(v) => onChange(v[0])} 
+            min={min}
+            max={max} 
+            step={step} 
+            className="[&_[data-slot=slider-range]]:bg-blue-300"
+          />
+        </div>
+      )}
       <div className="text-[10px] text-slate-500 text-right">
-        {new Intl.NumberFormat('ko-KR').format(value)} {suffix}
+        {isPercentage ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat('ko-KR').format(value)} ${suffix}`}
       </div>
     </div>
   );
@@ -144,6 +189,8 @@ const ResultItem = ({ label, value, suffix = "원", highlight = false, subValue 
 
 // --- Main Application ---
 
+type PropertyType = "RESIDENTIAL_1ST" | "RESIDENTIAL_MULTI" | "NON_RESIDENTIAL";
+
 export default function App() {
   // Inputs
   const [appraisalValue, setAppraisalValue] = useState(500000000); // 5억
@@ -156,6 +203,41 @@ export default function App() {
   const [repairCosts, setRepairCosts] = useState(10000000); // 1000만
   const [expectedResalePrice, setExpectedResalePrice] = useState(550000000); // 5.5억
   const [holdingPeriod, setHoldingPeriod] = useState(12); // 12개월
+  const [propertyType, setPropertyType] = useState<PropertyType>("RESIDENTIAL_1ST");
+  const [isAutoTax, setIsAutoTax] = useState(true);
+
+  // Automatic Tax Calculation Logic
+  const applyAutoTax = React.useCallback((type: PropertyType, price: number) => {
+    let tRate = 1.1;
+    let lRate = 0.5;
+
+    if (type === "RESIDENTIAL_1ST") {
+      if (price <= 600000000) tRate = 1.1;
+      else if (price <= 900000000) {
+        // Simple linear interpolation approx or just the standard bracket
+        // 6~9억 구간은 (가격 * 2/3 - 3) 
+        tRate = Number(((price * 2 / 300000000 - 3)).toFixed(2));
+      }
+      else tRate = 3.3;
+      lRate = 0.3;
+    } else if (type === "RESIDENTIAL_MULTI") {
+      tRate = 8.8; 
+      lRate = 0.4;
+    } else if (type === "NON_RESIDENTIAL") {
+      tRate = 4.6; 
+      lRate = 0.5;
+    }
+
+    setTaxRate(Math.max(0, tRate));
+    setLegalFeeRate(lRate);
+  }, []);
+
+  // Sync tax rates when bidPrice or type changes if auto is enabled
+  React.useEffect(() => {
+    if (isAutoTax) {
+      applyAutoTax(propertyType, bidPrice);
+    }
+  }, [bidPrice, propertyType, isAutoTax, applyAutoTax]);
 
   // Calculations
   const results = useMemo((): CalculationResult => {
@@ -198,6 +280,9 @@ export default function App() {
     { name: "수리/명도", value: results.repairCosts },
     { name: "이자비용", value: results.totalInterest },
   ];
+
+  const sliderMax = useMemo(() => (appraisalValue > 0 ? appraisalValue * 2 : 1000000000), [appraisalValue]);
+  const priceStep = useMemo(() => Math.max(100000, appraisalValue / 100), [appraisalValue]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900">
@@ -251,17 +336,63 @@ export default function App() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="p-6 space-y-6">
+                <div className="space-y-3">
+                  <Label className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                    <Home className="w-4 h-4 text-blue-500" />
+                    물건 종류 및 취득 조건
+                  </Label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: "RESIDENTIAL_1ST", label: "주택(1주택)" },
+                      { id: "RESIDENTIAL_MULTI", label: "주택(다주택)" },
+                      { id: "NON_RESIDENTIAL", label: "상가/토지" }
+                    ].map((type) => (
+                      <Button
+                        key={type.id}
+                        variant={propertyType === type.id ? "default" : "outline"}
+                        size="sm"
+                        className="text-[10px] px-1 h-8"
+                        onClick={() => {
+                          setPropertyType(type.id as PropertyType);
+                          applyAutoTax(type.id as PropertyType, bidPrice);
+                        }}
+                      >
+                        {type.label}
+                      </Button>
+                    ))}
+                  </div>
+                  <Button 
+                    variant={isAutoTax ? "default" : "outline"} 
+                    size="sm" 
+                    className={cn(
+                      "w-full text-[10px] h-7",
+                      isAutoTax ? "bg-blue-600 text-white" : "text-slate-400"
+                    )}
+                    onClick={() => setIsAutoTax(!isAutoTax)}
+                  >
+                    {isAutoTax ? "법정 세율 자동 적용 중" : "수동 입력 모드 (클릭하여 자동 적용)"}
+                  </Button>
+                </div>
+
+                <Separator />
+
                 <NumericInput 
                   label="감정가" 
                   value={appraisalValue} 
                   onChange={setAppraisalValue} 
                   description="법원에서 평가한 물건의 가치입니다."
+                  withSlider
+                  max={sliderMax}
+                  step={priceStep}
                 />
                 <NumericInput 
                   label="최저매각가격" 
                   value={minBidPrice} 
                   onChange={setMinBidPrice} 
                   description="이번 회차에서 입찰 가능한 최소 금액입니다."
+                  withSlider
+                  max={sliderMax}
+                  step={priceStep}
                 />
                 <Separator />
                 <NumericInput 
@@ -269,6 +400,9 @@ export default function App() {
                   value={bidPrice} 
                   onChange={setBidPrice} 
                   description="본인이 입찰하고자 하는 금액입니다."
+                  withSlider
+                  max={sliderMax}
+                  step={priceStep}
                 />
                 
                 <div className="space-y-4">
@@ -281,19 +415,43 @@ export default function App() {
                     onValueChange={(v) => setLoanRatio(v[0])} 
                     max={90} 
                     step={5} 
+                    className="[&_[data-slot=slider-range]]:bg-blue-300"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                  <NumericInput label="대출 이자율" value={interestRate} onChange={setInterestRate} suffix="%" step={0.1} />
-                  <NumericInput label="보유 기간" value={holdingPeriod} onChange={setHoldingPeriod} suffix="개월" step={1} />
+                  <NumericInput 
+                    label="대출 이자율" 
+                    value={interestRate} 
+                    onChange={setInterestRate} 
+                    suffix="%" 
+                    isPercentage
+                  />
+                  <NumericInput 
+                    label="보유 기간" 
+                    value={holdingPeriod} 
+                    onChange={setHoldingPeriod} 
+                    suffix="개월" 
+                  />
                 </div>
 
                 <Separator />
 
                 <div className="grid grid-cols-2 gap-4">
-                  <NumericInput label="취득세율" value={taxRate} onChange={setTaxRate} suffix="%" step={0.1} />
-                  <NumericInput label="법무/기타" value={legalFeeRate} onChange={setLegalFeeRate} suffix="%" step={0.1} />
+                  <NumericInput 
+                    label="취득세율" 
+                    value={taxRate} 
+                    onChange={setTaxRate} 
+                    suffix="%" 
+                    isPercentage
+                  />
+                  <NumericInput 
+                    label="법무/기타" 
+                    value={legalFeeRate} 
+                    onChange={setLegalFeeRate} 
+                    suffix="%" 
+                    isPercentage
+                  />
                 </div>
                 
                 <NumericInput label="명도/수리비" value={repairCosts} onChange={setRepairCosts} />
@@ -305,6 +463,9 @@ export default function App() {
                   value={expectedResalePrice} 
                   onChange={setExpectedResalePrice} 
                   description="보유 기간 후 매도할 때의 예상 가격입니다."
+                  withSlider
+                  max={sliderMax}
+                  step={priceStep}
                 />
               </CardContent>
               <CardFooter className="bg-slate-50 p-4 border-t">
