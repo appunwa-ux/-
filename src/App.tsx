@@ -124,18 +124,18 @@ const NumericInput = ({
   };
 
   const valueToNumber = (val: number) => {
-    if (isNaN(val)) return 0;
+    if (typeof val !== 'number' || isNaN(val)) return 0;
     return val;
   };
 
   const sliderValue = valueToNumber(value);
-  const sliderMax = valueToNumber(max);
+  const sliderMax = valueToNumber(max) || 100;
   const sliderMin = valueToNumber(min);
 
   const handleSliderChange = (vals: number[]) => {
-    const val = vals[0];
-    if (!isNaN(val)) {
-      onChange(val);
+    const newValue = vals[0];
+    if (typeof newValue === 'number' && !isNaN(newValue)) {
+      onChange(newValue);
     }
   };
 
@@ -159,24 +159,24 @@ const NumericInput = ({
           onChange={handleChange}
           onBlur={handleBlur}
           onFocus={handleFocus}
-          className="pr-12 font-mono"
+          className="pr-12 font-mono h-10"
           placeholder={isPercentage ? "0.0" : "0"}
         />
         <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
           {suffix}
         </span>
       </div>
-      <div className="pt-2 pb-1">
+      <div className="pt-3 pb-2">
         <Slider 
           value={[sliderValue]} 
           onValueChange={handleSliderChange} 
           min={sliderMin}
           max={sliderMax} 
           step={step} 
-          className="[&_[data-slot=slider-range]]:bg-blue-300"
+          className="[&_[data-slot=slider-range]]:bg-sky-400 [&_[data-slot=slider-track]]:bg-sky-100"
         />
       </div>
-      <div className="text-[10px] text-slate-500 text-right">
+      <div className="text-[10px] text-slate-500 text-right font-medium">
         {isNaN(value) ? `0 ${suffix}` : (isPercentage ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat('ko-KR').format(value)} ${suffix}`)}
       </div>
     </div>
@@ -220,15 +220,18 @@ export default function App() {
   const [propertyType, setPropertyType] = useState<PropertyType>("RESIDENTIAL_1ST");
   const [isAutoTax, setIsAutoTax] = useState(true);
 
-  // Define stable max for sliders
+  // Define stable max for sliders - Use a very large fixed increments to prevent jumps during dragging
   const stableMax = React.useMemo(() => {
-    // Round up to nearest 1억 or use constant if too small
-    const base = appraisalValue > 0 ? appraisalValue : 500000000;
-    return Math.max(base * 3, 1000000000); 
-  }, [appraisalValue > 0 ? Math.floor(appraisalValue / 100000000) : 0]); 
-  // Note: deps logic updated to only change when appraisalValue cross 1억 boundaries to reduce jumping
+    const highestValue = Math.max(appraisalValue, bidPrice, expectedResalePrice, 1000000000);
+    // 10억 단위로 올림하여 슬라이더 범위가 자주 바뀌지 않게 고정
+    return Math.ceil(highestValue / 1000000000) * 2000000000; 
+  }, [
+    Math.floor(appraisalValue / 500000000),
+    Math.floor(bidPrice / 500000000),
+    Math.floor(expectedResalePrice / 500000000)
+  ]); 
 
-  const priceStep = React.useMemo(() => 100000, []);
+  const priceStep = 100000; // 10만원 단위로 고정
 
   // Automatic Tax Calculation Logic
   const applyAutoTax = React.useCallback((type: PropertyType, price: number) => {
@@ -295,13 +298,13 @@ export default function App() {
     };
   }, [bidPrice, loanRatio, interestRate, taxRate, legalFeeRate, repairCosts, expectedResalePrice, holdingPeriod]);
 
-  const chartData = [
+  const chartData = useMemo(() => [
     { name: "낙찰가", value: results.bidPrice },
     { name: "취득세", value: results.acquisitionTax },
     { name: "법무비용", value: results.legalFees },
     { name: "수리/명도", value: results.repairCosts },
     { name: "이자비용", value: results.totalInterest },
-  ];
+  ], [results]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900">
@@ -423,16 +426,19 @@ export default function App() {
                 
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
-                    <Label className="text-sm font-medium">대출 비율 (LTV)</Label>
+                    <Label className="text-sm font-medium text-slate-700">대출 비율 (LTV)</Label>
                     <span className="text-blue-600 font-bold">{isNaN(loanRatio) ? 0 : loanRatio}%</span>
                   </div>
-                  <Slider 
-                    value={[isNaN(loanRatio) ? 0 : loanRatio]} 
-                    onValueChange={(v) => !isNaN(v[0]) && setLoanRatio(v[0])} 
-                    max={90} 
-                    step={5} 
-                    className="[&_[data-slot=slider-range]]:bg-blue-300"
-                  />
+                  <div className="pt-3 pb-2">
+                    <Slider 
+                      value={[isNaN(loanRatio) ? 0 : loanRatio]} 
+                      onValueChange={(v) => !isNaN(v?.[0]) && setLoanRatio(v[0])} 
+                      min={0}
+                      max={95} 
+                      step={5} 
+                      className="[&_[data-slot=slider-range]]:bg-sky-400 [&_[data-slot=slider-track]]:bg-sky-100"
+                    />
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
