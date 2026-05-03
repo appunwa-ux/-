@@ -7,7 +7,7 @@ import React, { useState, useMemo } from "react";
 import { 
   Calculator as CalcIcon, 
   TrendingUp, 
-  DollarSign, 
+  Landmark, 
   Home, 
   Percent, 
   Info, 
@@ -59,7 +59,7 @@ const NumericInput = ({
   label, 
   value, 
   onChange, 
-  suffix = "원", 
+  suffix = "KRW", 
   description,
   isPercentage = false
 }: { 
@@ -145,12 +145,12 @@ const NumericInput = ({
   );
 };
 
-const ResultItem = ({ label, value, suffix = "원", highlight = false, subValue }: { label: string; value: string | number; suffix?: string; highlight?: boolean; subValue?: string }) => (
+const ResultItem = ({ label, value, suffix = " KRW", highlight = false, subValue }: { label: string; value: string | number; suffix?: string; highlight?: boolean; subValue?: string }) => (
   <div className={cn(
     "flex justify-between items-center p-3 rounded-lg transition-colors",
     highlight ? "bg-blue-50 border border-blue-100" : "hover:bg-slate-50"
   )}>
-    <span className="text-sm text-slate-600">{label}</span>
+    <span className="text-sm text-slate-600 font-medium">{label}</span>
     <div className="text-right">
       <div className={cn(
         "font-bold",
@@ -158,7 +158,7 @@ const ResultItem = ({ label, value, suffix = "원", highlight = false, subValue 
       )}>
         {typeof value === 'number' ? new Intl.NumberFormat('ko-KR').format(value) : value}{suffix}
       </div>
-      {subValue && <div className="text-[10px] text-slate-400">{subValue}</div>}
+      {subValue && <div className="text-[10px] text-slate-400 font-medium">{subValue}</div>}
     </div>
   </div>
 );
@@ -317,8 +317,8 @@ export default function App() {
             <Card className="border-none shadow-xl bg-white/80 backdrop-blur-sm overflow-hidden">
               <CardHeader className="bg-slate-900 text-white">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <DollarSign className="w-5 h-5 text-blue-400" />
-                  투자 조건 입력
+                  <Landmark className="w-5 h-5 text-blue-400" />
+                  투자 조건 입력 (KRW)
                 </CardTitle>
                 <CardDescription className="text-slate-400">
                   물건 정보와 예상 비용을 입력하세요.
@@ -553,7 +553,7 @@ export default function App() {
                     <span className="text-[11px] font-bold text-slate-400 uppercase">총 취득 비용</span>
                   </div>
                   <div className="text-xl font-bold">
-                    {new Intl.NumberFormat('ko-KR').format(results.totalAcquisitionCost)}원
+                    {new Intl.NumberFormat('ko-KR').format(results.totalAcquisitionCost)} KRW
                   </div>
                 </CardContent>
               </Card>
@@ -566,7 +566,7 @@ export default function App() {
                     <span className="text-[11px] font-bold text-slate-400 uppercase">필요 실투자금</span>
                   </div>
                   <div className="text-xl font-bold">
-                    {new Intl.NumberFormat('ko-KR').format(results.equityNeeded)}원
+                    {new Intl.NumberFormat('ko-KR').format(results.equityNeeded)} KRW
                   </div>
                 </CardContent>
               </Card>
@@ -582,15 +582,15 @@ export default function App() {
                     "text-xl font-bold",
                     results.totalProfit >= 0 ? "text-emerald-600" : "text-red-600"
                   )}>
-                    {new Intl.NumberFormat('ko-KR').format(results.totalProfit)}원
+                    {new Intl.NumberFormat('ko-KR').format(results.totalProfit)} KRW
                   </div>
                 </CardContent>
               </Card>
             </div>
 
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+            <div className="space-y-6">
               {/* Detailed Reports */}
-              <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
                   <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
                     <ChevronRight className="w-4 h-4 text-blue-500" />
@@ -612,47 +612,47 @@ export default function App() {
                     <ChevronRight className="w-4 h-4 text-blue-500" />
                     수익성 분석 시각화
                   </h3>
-                  <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-4">
+                  <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-4 h-full flex flex-col justify-between">
                     <div className="flex justify-between items-end">
                       <div>
                         <div className="text-[10px] text-slate-400 font-bold uppercase">예상 매도가</div>
-                        <div className="text-xl font-black">{new Intl.NumberFormat('ko-KR').format(results.expectedResalePrice)}원</div>
+                        <div className="text-xl font-black">{new Intl.NumberFormat('ko-KR').format(results.expectedResalePrice)} KRW</div>
                       </div>
                       <div className="text-right">
                         <div className="text-[10px] text-slate-400 font-bold uppercase">손익분기</div>
-                        <div className="text-xs font-medium text-slate-600">{new Intl.NumberFormat('ko-KR').format(results.breakEvenPrice)}원</div>
+                        <div className="text-xs font-medium text-slate-600">{new Intl.NumberFormat('ko-KR').format(results.breakEvenPrice)} KRW</div>
                       </div>
                     </div>
                     
-                    <div className="relative h-3 bg-slate-100 rounded-full overflow-hidden">
-                      <div 
-                        className="absolute top-0 left-0 h-full bg-blue-500 transition-all duration-500"
-                        style={{ width: `${Math.min(100, (results.totalAcquisitionCost / results.expectedResalePrice) * 100)}%` }}
-                      />
-                      <div 
-                        className="absolute top-0 left-0 h-full bg-amber-400 transition-all duration-500"
-                        style={{ 
-                          left: `${(results.totalAcquisitionCost / results.expectedResalePrice) * 100}%`,
-                          width: `${Math.min(100 - (results.totalAcquisitionCost / results.expectedResalePrice) * 100, (results.totalInterest / results.expectedResalePrice) * 100)}%` 
-                        }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-[9px] text-slate-400 font-bold">
-                      <span>취득원가</span>
-                      <span>이자비용</span>
-                      <span>수익구간</span>
+                    <div className="space-y-1">
+                      <div className="relative h-3 bg-slate-100 rounded-full overflow-hidden">
+                        <div 
+                          className="absolute top-0 left-0 h-full bg-blue-500 transition-all duration-500"
+                          style={{ width: `${Math.min(100, (results.totalAcquisitionCost / results.expectedResalePrice) * 100)}%` }}
+                        />
+                        <div 
+                          className="absolute top-0 left-0 h-full bg-amber-400 transition-all duration-500"
+                          style={{ 
+                            left: `${(results.totalAcquisitionCost / results.expectedResalePrice) * 100}%`,
+                            width: `${Math.min(100 - (results.totalAcquisitionCost / results.expectedResalePrice) * 100, (results.totalInterest / results.expectedResalePrice) * 100)}%` 
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[9px] text-slate-400 font-bold uppercase tracking-tighter">
+                        <span>취득원가</span>
+                        <span>이자비용</span>
+                        <span>수익구간</span>
+                      </div>
                     </div>
 
-                    <Separator />
-
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center pt-2">
                       <div className="space-y-0.5">
                         <div className="text-[10px] text-slate-400 font-bold uppercase">최종 예상 수익</div>
                         <div className={cn(
                           "text-xl font-black",
                           results.totalProfit >= 0 ? "text-emerald-600" : "text-red-600"
                         )}>
-                          {new Intl.NumberFormat('ko-KR').format(results.totalProfit)}원
+                          {new Intl.NumberFormat('ko-KR').format(results.totalProfit)} KRW
                         </div>
                       </div>
                       <div className="text-right space-y-0.5">
@@ -669,25 +669,25 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Visualization Column */}
-              <div className="space-y-4">
-                <Card className="bg-white border-none shadow-sm overflow-hidden h-full flex flex-col">
+              {/* Bottom Visual & Opinion Row */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <Card className="bg-white border-none shadow-sm overflow-hidden flex flex-col min-h-[300px]">
                   <CardHeader className="py-4">
                     <CardTitle className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
                       <PieChartIcon className="w-4 h-4 text-blue-500" />
-                      비용 구조 시각화
+                      비용 구조 시각화 (KRW)
                     </CardTitle>
                   </CardHeader>
-                  <CardContent className="flex-1 flex flex-col justify-center min-h-[250px] p-2">
-                    <div className="h-[200px] w-full">
+                  <CardContent className="flex-1 flex flex-col justify-center p-4">
+                    <div className="h-[150px] w-full mb-4">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
                           <Pie
                             data={chartData}
                             cx="50%"
                             cy="50%"
-                            innerRadius={45}
-                            outerRadius={65}
+                            innerRadius={40}
+                            outerRadius={60}
                             paddingAngle={5}
                             dataKey="value"
                             isAnimationActive={false}
@@ -697,22 +697,22 @@ export default function App() {
                             ))}
                           </Pie>
                           <RechartsTooltip 
-                            formatter={(value: number) => `${new Intl.NumberFormat('ko-KR').format(value)}원`}
+                            formatter={(value: number) => `${new Intl.NumberFormat('ko-KR').format(value)} KRW`}
                           />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
-                    <div className="px-4 pb-4 space-y-2">
+                    <div className="space-y-2">
                       {chartData.slice(0, 4).map((item, idx) => {
                         const total = chartData.reduce((acc, curr) => acc + curr.value, 0);
                         const percentage = ((item.value / total) * 100).toFixed(1);
                         return (
                           <div key={`cost-detail-${item.name}`} className="space-y-1">
                             <div className="flex justify-between text-[10px] font-medium">
-                              <span>{item.name}</span>
-                              <span className="text-slate-400">{percentage}%</span>
+                              <span className="text-slate-600">{item.name}</span>
+                              <span className="text-slate-400 font-mono">{percentage}%</span>
                             </div>
-                            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                            <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
                               <div 
                                 className="h-full rounded-full"
                                 style={{ 
@@ -727,40 +727,48 @@ export default function App() {
                     </div>
                   </CardContent>
                 </Card>
+
+                <Card className="bg-slate-900 text-white border-none shadow-sm overflow-hidden flex flex-col min-h-[300px]">
+                  <div className="p-6 flex-1">
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="p-1.5 bg-blue-500/20 text-blue-400 rounded-lg">
+                        <TrendingUp className="w-4 h-4" />
+                      </div>
+                      <CardTitle className="text-base font-bold">AI 투자 의견</CardTitle>
+                    </div>
+                    <div className="space-y-4">
+                      <p className="text-slate-300 text-sm leading-relaxed">
+                        {results.roi > 20 
+                          ? "현재 예상 수익률은 매우 매력적인 수준입니다. 다만 입찰 전 명도 리스크와 인근 지역의 급매 가격을 반드시 교차 검증하시기 바랍니다."
+                          : results.roi > 10 
+                          ? "안정적인 수익이 기대되는 구간입니다. 낙찰률 통계를 바탕으로 입찰 스펙트럼을 넓게 가져가는 전략을 권장합니다."
+                          : results.roi > 0 
+                          ? "수익률이 상대적으로 낮아 리스크 대비 보상이 적을 수 있습니다. 비용 절감 요소를 찾거나 보수적인 입찰가 산정이 필요합니다."
+                          : "분석 결과 손실 발생 가능성이 큽니다. 입찰가를 하향 조정하거나 물건의 하자 여부를 다시 검토하시는 것이 안전합니다."}
+                      </p>
+                      <div className="p-3 bg-slate-800/50 rounded-xl border border-slate-700">
+                        <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">핵심 지표</div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-xs text-slate-300">예상 순이익</span>
+                          <span className={cn(
+                            "text-sm font-bold",
+                            results.totalProfit >= 0 ? "text-emerald-400" : "text-red-400"
+                          )}>
+                            {new Intl.NumberFormat('ko-KR').format(results.totalProfit)} KRW
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-6 bg-slate-800/30 border-t border-slate-800">
+                    <Button variant="default" className="w-full bg-blue-600 hover:bg-blue-500 font-bold h-11">
+                      상세 분석 리포트 PDF 저장
+                      <ArrowRight className="w-4 h-4 ml-2" />
+                    </Button>
+                  </div>
+                </Card>
               </div>
             </div>
-
-            {/* Investment Opinion - Now at the Bottom */}
-            <Card className="bg-slate-900 text-white border-none shadow-xl overflow-hidden relative">
-              <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
-                <CalcIcon className="w-32 h-32" />
-              </div>
-              <div className="flex flex-col md:flex-row items-center">
-                <div className="flex-1 p-6">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="p-1.5 bg-blue-500/20 text-blue-400 rounded-lg">
-                      <TrendingUp className="w-4 h-4" />
-                    </div>
-                    <CardTitle className="text-base">AI 투자 의견</CardTitle>
-                  </div>
-                  <p className="text-slate-300 text-sm leading-relaxed max-w-2xl">
-                    {results.roi > 20 
-                      ? "매우 매력적인 수익률입니다. 명도 리스크와 급매가격을 다시 한번 확인 후 입찰을 권장합니다."
-                      : results.roi > 10 
-                      ? "안정적인 수익권입니다. 인근 유사 물건의 최근 낙찰가율을 분석하여 경쟁력을 확보하세요."
-                      : results.roi > 0 
-                      ? "수익이 낮거나 리스크 대비 보상이 적을 수 있습니다. 비용 절감 방안이나 매도가 상향 가능성을 검토하세요."
-                      : "현재 조건으로는 손실이 예상됩니다. 입찰가를 낮추거나 다른 물건을 검토하는 것이 좋습니다."}
-                  </p>
-                </div>
-                <div className="p-6 md:border-l md:border-slate-800 w-full md:w-auto">
-                  <Button variant="default" className="w-full bg-blue-600 hover:bg-blue-500 font-bold whitespace-nowrap">
-                    상세 리포트 PDF 저장
-                    <ArrowRight className="w-4 h-4 ml-2" />
-                  </Button>
-                </div>
-              </div>
-            </Card>
           </div>
 
         </div>
