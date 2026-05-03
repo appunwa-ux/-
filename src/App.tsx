@@ -14,6 +14,7 @@ import {
   Percent, 
   Info, 
   ArrowRight,
+  Loader2,
   PieChart as PieChartIcon,
   ChevronRight,
   AlertCircle,
@@ -54,6 +55,8 @@ interface CalculationResult {
   roi: number;
   breakEvenPrice: number;
   capitalGainsTax: number;
+  regulatedMaxLoan: number;
+  requestedLoanAmount: number;
 }
 
 // --- Helper Components ---
@@ -193,29 +196,75 @@ export default function App() {
   const [isAutoTax, setIsAutoTax] = useState(true);
   const [isAutoLoan, setIsAutoLoan] = useState(true);
   const [inputTab, setInputTab] = useState<"FINANCE" | "SALE">("FINANCE");
+  const [isExporting, setIsExporting] = useState(false);
 
   const reportRef = useRef<HTMLDivElement>(null);
 
   // PDF Export Function
   const handleDownloadPDF = async () => {
     if (!reportRef.current) return;
+    setIsExporting(true);
+    
     try {
-      const canvas = await html2canvas(reportRef.current, {
+      // Scroll to top to ensure html2canvas captures correctly from the start
+      window.scrollTo(0, 0);
+      
+      // Small delay to ensure any UI transitions or hovers are cleared
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      const element = reportRef.current;
+      const canvas = await html2canvas(element, {
         scale: 2,
         useCORS: true,
-        logging: false,
-        backgroundColor: "#f8fafc" // bg-slate-50
+        logging: true,
+        backgroundColor: "#f8fafc",
+        onclone: (doc) => {
+          // Hide all elements marked for exclusion
+          const ignored = doc.querySelectorAll('[data-pdf-ignore]');
+          ignored.forEach(el => (el as HTMLElement).style.display = 'none');
+          
+          // Ensure container has proper styling in cloned doc
+          const container = doc.querySelector('.max-w-7xl');
+          if (container) {
+            (container as HTMLElement).style.margin = '0';
+            (container as HTMLElement).style.padding = '30px';
+            (container as HTMLElement).style.width = '1200px';
+            (container as HTMLElement).style.maxWidth = 'none';
+          }
+        }
       });
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF("p", "mm", "a4");
-      const imgProps = pdf.getImageProperties(imgData);
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+      const imgData = canvas.toDataURL("image/png", 1.0);
+      const pdf = new jsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: 'a4',
+        compress: true
+      });
       
-      pdf.addImage(imgData, "PNG", 0, 0, pdfWidth, pdfHeight);
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      
+      // Calculate proportions to fit A4
+      const canvasWidth = canvas.width / 2; // back to original scale relative to 2x canvas
+      const canvasHeight = canvas.height / 2;
+      
+      const widthRatio = (pdfWidth - 20) / canvasWidth;
+      const finalWidth = canvasWidth * widthRatio;
+      const finalHeight = canvasHeight * widthRatio;
+
+      pdf.addImage(imgData, "PNG", 10, 10, finalWidth, finalHeight, undefined, 'FAST');
+      pdf.setProperties({
+        title: "경매 권리분석 리포트",
+        subject: "부동산 경매 수익률 분석 자료",
+        author: "AI Auction Pro"
+      });
+
       pdf.save(`경매_분석_리포트_${new Date().toISOString().slice(0,10)}.pdf`);
     } catch (error) {
       console.error("PDF generation failed:", error);
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -270,33 +319,51 @@ export default function App() {
     const legalFees = Math.floor(bidPrice * (legalFeeRate / 100));
     const totalAcquisitionCost = bidPrice + acquisitionTax + legalFees + repairCosts;
     
-    // LTV Logic based on 2026 Table (Caps based on property value)
-    let baseLtvLimit = regionType === "ADJUSTED" ? 50 : 70;
+    // LTV Logic (Korean Mortgage Regulations based on user provided table)
+    let baseLtvLimit = 70;
     let absoluteLoanCap = Infinity;
 
     if (propertyType === "RESIDENTIAL") {
       if (isFirstHomeBuyer) {
         baseLtvLimit = 80;
-        absoluteLoanCap = 600000000; // 6억
-      } else if (houseCount === 1) {
-        // Absolute limits based on price (Tiered caps)
-        const priceTier = appraisalValue; 
-        if (priceTier > 2500000000) absoluteLoanCap = 200000000;
-        else if (priceTier > 1500000000) absoluteLoanCap = 400000000;
-        else if (priceTier > 900000000) absoluteLoanCap = 600000000;
-        
-        if (regionType === "ADJUSTED") baseLtvLimit = 50;
+        absoluteLoanCap = 600000000; // 생애최초 무주택자 최대 6억
       } else {
-        // Multi-house
-        baseLtvLimit = regionType === "ADJUSTED" ? 0 : 60;
+        // Apply tiered absolute limits based on appraisal value as shown in common table
+        if (appraisalValue <= 900000000) {
+          absoluteLoanCap = Infinity; // 9억 이하
+        } else if (appraisalValue <= 1500000000) {
+          absoluteLoanCap = 600000000; // 9억 초과~15억 이하: 최대 6억
+        } else if (appraisalValue <= 2500000000) {
+          absoluteLoanCap = 400000000; // 15억 초과~25억 이하: 최대 4억
+        } else {
+          absoluteLoanCap = 200000000; // 25억 초과: 최대 2억
+        }
+
+        if (regionType === "ADJUSTED") {
+          if (houseCount === 1) {
+            baseLtvLimit = 50; // 조정대상지역 1주택 50%
+            // Regional specific override for adjusted areas if requested
+            absoluteLoanCap = Math.min(absoluteLoanCap, 400000000); 
+          } else {
+            baseLtvLimit = 0; // 다주택자 조정지역 대출 금지
+          }
+        } else {
+          // 비조정대상지역 (사용자 제공 테이블 기준)
+          if (houseCount === 1) {
+            baseLtvLimit = 70;
+          } else {
+            baseLtvLimit = 60; // 비조정 다주택 60%
+            absoluteLoanCap = Infinity; // Typically no specific tiered cap for multi-house if permitted
+          }
+        }
       }
     } else {
+      // 상가, 토지 등
       baseLtvLimit = 80;
     }
 
-    // Maximum loan amount allowed by regulation
-    const maxLoanByRatio = bidPrice * (baseLtvLimit / 100);
-    const regulatedMaxLoan = Math.min(maxLoanByRatio, absoluteLoanCap);
+    // Maximum loan amount allowed by regulation (LTV based on bid price)
+    const regulatedMaxLoan = Math.min(bidPrice * (baseLtvLimit / 100), absoluteLoanCap);
     
     // Final loan amount selection
     const requestedLoanAmount = bidPrice * (loanRatio / 100);
@@ -399,7 +466,9 @@ export default function App() {
       totalProfit,
       roi,
       breakEvenPrice,
-      capitalGainsTax
+      capitalGainsTax,
+      regulatedMaxLoan,
+      requestedLoanAmount
     };
   }, [bidPrice, loanRatio, interestRate, taxRate, legalFeeRate, repairCosts, expectedResalePrice, loanPeriod, holdingDuration, regionType, isFirstHomeBuyer, houseCount, isAutoLoan, propertyType, appraisalValue, isTaxExempt]);
 
@@ -413,7 +482,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900">
-      <div className="max-w-7xl mx-auto space-y-8">
+      <div className="max-w-7xl mx-auto space-y-8" ref={reportRef}>
         
         {/* Header */}
         <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
@@ -611,7 +680,14 @@ export default function App() {
                         isPercentage
                       />
                       <div className="flex justify-between items-center -mt-2 px-1">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase">규제 한도 내 대출금</span>
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase">규제 한도 내 대출금</span>
+                          {isAutoLoan && results.requestedLoanAmount > results.regulatedMaxLoan && (
+                            <span className="text-[8px] text-rose-500 font-bold animate-pulse">
+                              * 규제 한도 ({new Intl.NumberFormat('ko-KR').format(Math.floor(results.regulatedMaxLoan / 100000000 * 100) / 100)}억) 적용됨
+                            </span>
+                          )}
+                        </div>
                         <span className="text-[11px] font-bold text-amber-600">
                           {new Intl.NumberFormat('ko-KR').format(results.loanAmount)} KRW
                         </span>
@@ -794,7 +870,7 @@ export default function App() {
           </div>
 
           {/* Right: Analysis */}
-          <div className="lg:col-span-8 space-y-6" ref={reportRef}>
+          <div className="lg:col-span-8 space-y-6">
             
             {/* Quick Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1037,9 +1113,20 @@ export default function App() {
                       variant="default" 
                       className="w-full bg-blue-600 hover:bg-blue-500 font-bold h-11"
                       onClick={handleDownloadPDF}
+                      disabled={isExporting}
+                      data-pdf-ignore
                     >
-                      상세 분석 리포트 PDF 저장
-                      <ArrowRight className="w-4 h-4 ml-2" />
+                      {isExporting ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          PDF 문서 생성 중...
+                        </>
+                      ) : (
+                        <>
+                          상세 분석 리포트 PDF 저장
+                          <ArrowRight className="w-4 h-4 ml-2" />
+                        </>
+                      )}
                     </Button>
                   </div>
                 </Card>
