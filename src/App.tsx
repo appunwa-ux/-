@@ -123,9 +123,21 @@ const NumericInput = ({
     e.target.select();
   };
 
-  const sliderValue = isNaN(value) ? 0 : value;
-  const sliderMax = isNaN(max) ? 1000000000 : max;
-  const sliderMin = isNaN(min) ? 0 : min;
+  const valueToNumber = (val: number) => {
+    if (isNaN(val)) return 0;
+    return val;
+  };
+
+  const sliderValue = valueToNumber(value);
+  const sliderMax = valueToNumber(max);
+  const sliderMin = valueToNumber(min);
+
+  const handleSliderChange = (vals: number[]) => {
+    const val = vals[0];
+    if (!isNaN(val)) {
+      onChange(val);
+    }
+  };
 
   return (
     <div className="space-y-2">
@@ -154,18 +166,16 @@ const NumericInput = ({
           {suffix}
         </span>
       </div>
-      {withSlider && (
-        <div className="pt-2 pb-1">
-          <Slider 
-            value={[sliderValue]} 
-            onValueChange={(v) => onChange(v[0])} 
-            min={sliderMin}
-            max={sliderMax} 
-            step={step} 
-            className="[&_[data-slot=slider-range]]:bg-blue-300"
-          />
-        </div>
-      )}
+      <div className="pt-2 pb-1">
+        <Slider 
+          value={[sliderValue]} 
+          onValueChange={handleSliderChange} 
+          min={sliderMin}
+          max={sliderMax} 
+          step={step} 
+          className="[&_[data-slot=slider-range]]:bg-blue-300"
+        />
+      </div>
       <div className="text-[10px] text-slate-500 text-right">
         {isNaN(value) ? `0 ${suffix}` : (isPercentage ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat('ko-KR').format(value)} ${suffix}`)}
       </div>
@@ -390,7 +400,6 @@ export default function App() {
                   value={appraisalValue} 
                   onChange={setAppraisalValue} 
                   description="법원에서 평가한 물건의 가치입니다."
-                  withSlider
                   max={stableMax}
                   step={priceStep}
                 />
@@ -399,7 +408,6 @@ export default function App() {
                   value={minBidPrice} 
                   onChange={setMinBidPrice} 
                   description="이번 회차에서 입찰 가능한 최소 금액입니다."
-                  withSlider
                   max={stableMax}
                   step={priceStep}
                 />
@@ -409,7 +417,6 @@ export default function App() {
                   value={bidPrice} 
                   onChange={setBidPrice} 
                   description="본인이 입찰하고자 하는 금액입니다."
-                  withSlider
                   max={stableMax}
                   step={priceStep}
                 />
@@ -417,11 +424,11 @@ export default function App() {
                 <div className="space-y-4">
                   <div className="flex justify-between items-center">
                     <Label className="text-sm font-medium">대출 비율 (LTV)</Label>
-                    <span className="text-blue-600 font-bold">{loanRatio}%</span>
+                    <span className="text-blue-600 font-bold">{isNaN(loanRatio) ? 0 : loanRatio}%</span>
                   </div>
                   <Slider 
-                    value={[loanRatio]} 
-                    onValueChange={(v) => setLoanRatio(v[0])} 
+                    value={[isNaN(loanRatio) ? 0 : loanRatio]} 
+                    onValueChange={(v) => !isNaN(v[0]) && setLoanRatio(v[0])} 
                     max={90} 
                     step={5} 
                     className="[&_[data-slot=slider-range]]:bg-blue-300"
@@ -435,12 +442,16 @@ export default function App() {
                     onChange={setInterestRate} 
                     suffix="%" 
                     isPercentage
+                    max={15}
+                    step={0.1}
                   />
                   <NumericInput 
                     label="보유 기간" 
                     value={holdingPeriod} 
                     onChange={setHoldingPeriod} 
                     suffix="개월" 
+                    max={36}
+                    step={1}
                   />
                 </div>
 
@@ -453,6 +464,8 @@ export default function App() {
                     onChange={setTaxRate} 
                     suffix="%" 
                     isPercentage
+                    max={15}
+                    step={0.1}
                   />
                   <NumericInput 
                     label="법무/기타" 
@@ -460,10 +473,18 @@ export default function App() {
                     onChange={setLegalFeeRate} 
                     suffix="%" 
                     isPercentage
+                    max={5}
+                    step={0.1}
                   />
                 </div>
                 
-                <NumericInput label="명도/수리비" value={repairCosts} onChange={setRepairCosts} />
+                <NumericInput 
+                  label="명도/수리비" 
+                  value={repairCosts} 
+                  onChange={setRepairCosts} 
+                  max={100000000}
+                  step={1000000}
+                />
                 
                 <Separator />
                 
@@ -472,7 +493,6 @@ export default function App() {
                   value={expectedResalePrice} 
                   onChange={setExpectedResalePrice} 
                   description="보유 기간 후 매도할 때의 예상 가격입니다."
-                  withSlider
                   max={stableMax}
                   step={priceStep}
                 />
