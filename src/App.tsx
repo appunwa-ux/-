@@ -103,8 +103,8 @@ const NumericInput = ({
 
     const numValue = parseFloat(rawValue);
     if (!isNaN(numValue)) {
-      if (isPercentage && numValue > 100) {
-        onChange(100);
+      if (isPercentage) {
+        onChange(Math.min(100, numValue));
       } else {
         onChange(numValue);
       }
@@ -122,6 +122,10 @@ const NumericInput = ({
     isFocused.current = true;
     e.target.select();
   };
+
+  const sliderValue = isNaN(value) ? 0 : value;
+  const sliderMax = isNaN(max) ? 1000000000 : max;
+  const sliderMin = isNaN(min) ? 0 : min;
 
   return (
     <div className="space-y-2">
@@ -153,17 +157,17 @@ const NumericInput = ({
       {withSlider && (
         <div className="pt-2 pb-1">
           <Slider 
-            value={[value]} 
+            value={[sliderValue]} 
             onValueChange={(v) => onChange(v[0])} 
-            min={min}
-            max={max} 
+            min={sliderMin}
+            max={sliderMax} 
             step={step} 
             className="[&_[data-slot=slider-range]]:bg-blue-300"
           />
         </div>
       )}
       <div className="text-[10px] text-slate-500 text-right">
-        {isPercentage ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat('ko-KR').format(value)} ${suffix}`}
+        {isNaN(value) ? `0 ${suffix}` : (isPercentage ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat('ko-KR').format(value)} ${suffix}`)}
       </div>
     </div>
   );
@@ -206,6 +210,16 @@ export default function App() {
   const [propertyType, setPropertyType] = useState<PropertyType>("RESIDENTIAL_1ST");
   const [isAutoTax, setIsAutoTax] = useState(true);
 
+  // Define stable max for sliders
+  const stableMax = React.useMemo(() => {
+    // Round up to nearest 1억 or use constant if too small
+    const base = appraisalValue > 0 ? appraisalValue : 500000000;
+    return Math.max(base * 3, 1000000000); 
+  }, [appraisalValue > 0 ? Math.floor(appraisalValue / 100000000) : 0]); 
+  // Note: deps logic updated to only change when appraisalValue cross 1억 boundaries to reduce jumping
+
+  const priceStep = React.useMemo(() => 100000, []);
+
   // Automatic Tax Calculation Logic
   const applyAutoTax = React.useCallback((type: PropertyType, price: number) => {
     let tRate = 1.1;
@@ -214,8 +228,6 @@ export default function App() {
     if (type === "RESIDENTIAL_1ST") {
       if (price <= 600000000) tRate = 1.1;
       else if (price <= 900000000) {
-        // Simple linear interpolation approx or just the standard bracket
-        // 6~9억 구간은 (가격 * 2/3 - 3) 
         tRate = Number(((price * 2 / 300000000 - 3)).toFixed(2));
       }
       else tRate = 3.3;
@@ -280,9 +292,6 @@ export default function App() {
     { name: "수리/명도", value: results.repairCosts },
     { name: "이자비용", value: results.totalInterest },
   ];
-
-  const sliderMax = useMemo(() => (appraisalValue > 0 ? appraisalValue * 2 : 1000000000), [appraisalValue]);
-  const priceStep = useMemo(() => Math.max(100000, appraisalValue / 100), [appraisalValue]);
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans text-slate-900">
@@ -382,7 +391,7 @@ export default function App() {
                   onChange={setAppraisalValue} 
                   description="법원에서 평가한 물건의 가치입니다."
                   withSlider
-                  max={sliderMax}
+                  max={stableMax}
                   step={priceStep}
                 />
                 <NumericInput 
@@ -391,7 +400,7 @@ export default function App() {
                   onChange={setMinBidPrice} 
                   description="이번 회차에서 입찰 가능한 최소 금액입니다."
                   withSlider
-                  max={sliderMax}
+                  max={stableMax}
                   step={priceStep}
                 />
                 <Separator />
@@ -401,7 +410,7 @@ export default function App() {
                   onChange={setBidPrice} 
                   description="본인이 입찰하고자 하는 금액입니다."
                   withSlider
-                  max={sliderMax}
+                  max={stableMax}
                   step={priceStep}
                 />
                 
@@ -464,7 +473,7 @@ export default function App() {
                   onChange={setExpectedResalePrice} 
                   description="보유 기간 후 매도할 때의 예상 가격입니다."
                   withSlider
-                  max={sliderMax}
+                  max={stableMax}
                   step={priceStep}
                 />
               </CardContent>
