@@ -14,9 +14,9 @@ import {
   ArrowRight,
   PieChart as PieChartIcon,
   ChevronRight,
-  AlertCircle
+  AlertCircle,
+  Coins
 } from "lucide-react";
-import { motion, AnimatePresence } from "motion/react";
 import { 
   PieChart, 
   Pie, 
@@ -30,10 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
 // --- Constants & Types ---
@@ -64,10 +61,6 @@ const NumericInput = ({
   onChange, 
   suffix = "원", 
   description,
-  withSlider = false,
-  min = 0,
-  max = 1000000000,
-  step = 1000000,
   isPercentage = false
 }: { 
   label: string; 
@@ -75,10 +68,6 @@ const NumericInput = ({
   onChange: (val: number) => void; 
   suffix?: string;
   description?: string;
-  withSlider?: boolean;
-  min?: number;
-  max?: number;
-  step?: number;
   isPercentage?: boolean;
 }) => {
   const formatValue = (val: number) => {
@@ -91,7 +80,6 @@ const NumericInput = ({
   const isFocused = React.useRef(false);
 
   React.useEffect(() => {
-    // Only sync from parent if not focused (to allow external updates like auto-tax)
     if (!isFocused.current) {
       setInputValue(formatValue(value));
     }
@@ -123,22 +111,6 @@ const NumericInput = ({
     e.target.select();
   };
 
-  const valueToNumber = (val: number) => {
-    if (typeof val !== 'number' || isNaN(val)) return 0;
-    return val;
-  };
-
-  const sliderValue = valueToNumber(value);
-  const sliderMax = valueToNumber(max) || 100;
-  const sliderMin = valueToNumber(min);
-
-  const handleSliderChange = (vals: number[]) => {
-    const newValue = vals[0];
-    if (typeof newValue === 'number' && !isNaN(newValue)) {
-      onChange(newValue);
-    }
-  };
-
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-center">
@@ -159,22 +131,12 @@ const NumericInput = ({
           onChange={handleChange}
           onBlur={handleBlur}
           onFocus={handleFocus}
-          className="pr-12 font-mono h-10"
+          className="pr-12 font-mono h-10 transition-shadow focus:ring-2 focus:ring-blue-100"
           placeholder={isPercentage ? "0.0" : "0"}
         />
-        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">
+        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-medium">
           {suffix}
         </span>
-      </div>
-      <div className="pt-3 pb-2">
-        <Slider 
-          value={[sliderValue]} 
-          onValueChange={handleSliderChange} 
-          min={sliderMin}
-          max={sliderMax} 
-          step={step} 
-          className="[&_[data-slot=slider-range]]:bg-sky-400 [&_[data-slot=slider-track]]:bg-sky-100"
-        />
       </div>
       <div className="text-[10px] text-slate-500 text-right font-medium">
         {isNaN(value) ? `0 ${suffix}` : (isPercentage ? `${value.toFixed(1)}%` : `${new Intl.NumberFormat('ko-KR').format(value)} ${suffix}`)}
@@ -203,7 +165,9 @@ const ResultItem = ({ label, value, suffix = "원", highlight = false, subValue 
 
 // --- Main Application ---
 
-type PropertyType = "RESIDENTIAL_1ST" | "RESIDENTIAL_MULTI" | "NON_RESIDENTIAL";
+type PropertyType = "RESIDENTIAL" | "NON_RESIDENTIAL" | "FARMLAND";
+type RegionType = "NORMAL" | "ADJUSTED";
+type HouseCount = 1 | 2 | 3 | 4;
 
 export default function App() {
   // Inputs
@@ -217,52 +181,55 @@ export default function App() {
   const [repairCosts, setRepairCosts] = useState(10000000); // 1000만
   const [expectedResalePrice, setExpectedResalePrice] = useState(550000000); // 5.5억
   const [holdingPeriod, setHoldingPeriod] = useState(12); // 12개월
-  const [propertyType, setPropertyType] = useState<PropertyType>("RESIDENTIAL_1ST");
+  const [propertyType, setPropertyType] = useState<PropertyType>("RESIDENTIAL");
+  const [houseCount, setHouseCount] = useState<HouseCount>(1);
+  const [regionType, setRegionType] = useState<RegionType>("NORMAL");
   const [isAutoTax, setIsAutoTax] = useState(true);
 
-  // Define stable max for sliders - Use a very large fixed increments to prevent jumps during dragging
-  const stableMax = React.useMemo(() => {
-    const highestValue = Math.max(appraisalValue, bidPrice, expectedResalePrice, 1000000000);
-    // 10억 단위로 올림하여 슬라이더 범위가 자주 바뀌지 않게 고정
-    return Math.ceil(highestValue / 1000000000) * 2000000000; 
-  }, [
-    Math.floor(appraisalValue / 500000000),
-    Math.floor(bidPrice / 500000000),
-    Math.floor(expectedResalePrice / 500000000)
-  ]); 
-
-  const priceStep = 100000; // 10만원 단위로 고정
-
-  // Automatic Tax Calculation Logic
-  const applyAutoTax = React.useCallback((type: PropertyType, price: number) => {
+  // Automatic Tax Calculation Logic (2026 Table)
+  const applyAutoTax = React.useCallback((type: PropertyType, price: number, houses: HouseCount, region: RegionType) => {
     let tRate = 1.1;
     let lRate = 0.5;
 
-    if (type === "RESIDENTIAL_1ST") {
-      if (price <= 600000000) tRate = 1.1;
-      else if (price <= 900000000) {
-        tRate = Number(((price * 2 / 300000000 - 3)).toFixed(2));
-      }
-      else tRate = 3.3;
+    if (type === "RESIDENTIAL") {
       lRate = 0.3;
-    } else if (type === "RESIDENTIAL_MULTI") {
-      tRate = 8.8; 
-      lRate = 0.4;
+      
+      // Determine base tax rate based on house count and region
+      if (houses === 1 || (houses === 2 && region === "NORMAL")) {
+        // Standard Tax (1% ~ 3%)
+        if (price <= 600000000) tRate = 1.0;
+        else if (price <= 900000000) {
+          tRate = (price * 2 / 300000000) - 3;
+        } else {
+          tRate = 3.0;
+        }
+        // Add approx 0.1% ~ 0.5% for education/etc (simplified to average 0.1% or 0.3%)
+        tRate += (price > 600000000 ? 0.3 : 0.1); 
+      } 
+      else if ((houses === 2 && region === "ADJUSTED") || (houses === 3 && region === "NORMAL")) {
+        tRate = 8.4; // 8% base + approx 0.4% surcharge
+      } 
+      else if ((houses === 3 && region === "ADJUSTED") || houses >= 4) {
+        tRate = 12.4; // 12% base + approx 0.4% surcharge
+      }
     } else if (type === "NON_RESIDENTIAL") {
       tRate = 4.6; 
       lRate = 0.5;
+    } else if (type === "FARMLAND") {
+      tRate = 3.4;
+      lRate = 0.4;
     }
 
-    setTaxRate(Math.max(0, tRate));
+    setTaxRate(Number(Math.max(0, tRate).toFixed(2)));
     setLegalFeeRate(lRate);
   }, []);
 
-  // Sync tax rates when bidPrice or type changes if auto is enabled
+  // Sync tax rates when any relevant value changes if auto is enabled
   React.useEffect(() => {
     if (isAutoTax) {
-      applyAutoTax(propertyType, bidPrice);
+      applyAutoTax(propertyType, bidPrice, houseCount, regionType);
     }
-  }, [bidPrice, propertyType, isAutoTax, applyAutoTax]);
+  }, [bidPrice, propertyType, houseCount, regionType, isAutoTax, applyAutoTax]);
 
   // Calculations
   const results = useMemo((): CalculationResult => {
@@ -365,24 +332,66 @@ export default function App() {
                   </Label>
                   <div className="grid grid-cols-3 gap-2">
                     {[
-                      { id: "RESIDENTIAL_1ST", label: "주택(1주택)" },
-                      { id: "RESIDENTIAL_MULTI", label: "주택(다주택)" },
-                      { id: "NON_RESIDENTIAL", label: "상가/토지" }
+                      { id: "RESIDENTIAL", label: "주택" },
+                      { id: "NON_RESIDENTIAL", label: "상가/토지" },
+                      { id: "FARMLAND", label: "농지" }
                     ].map((type) => (
                       <Button
-                        key={type.id}
+                        key={`property-type-${type.id}`}
                         variant={propertyType === type.id ? "default" : "outline"}
                         size="sm"
                         className="text-[10px] px-1 h-8"
                         onClick={() => {
                           setPropertyType(type.id as PropertyType);
-                          applyAutoTax(type.id as PropertyType, bidPrice);
                         }}
                       >
                         {type.label}
                       </Button>
                     ))}
                   </div>
+
+                  {propertyType === "RESIDENTIAL" && (
+                    <div className="space-y-3 p-3 bg-slate-50 rounded-xl border border-slate-100 animate-in fade-in slide-in-from-top-1">
+                      <div className="space-y-1.5">
+                        <Label className="text-[10px] font-bold text-slate-500 uppercase">보유 주택 수 (취득 물건 포함)</Label>
+                        <div className="grid grid-cols-4 gap-1">
+                          {[1, 2, 3, 4].map((count) => (
+                            <Button
+                              key={`house-count-${count}`}
+                              variant={houseCount === count ? "default" : "outline"}
+                              size="sm"
+                              className="h-7 text-[10px]"
+                              onClick={() => setHouseCount(count as HouseCount)}
+                            >
+                              {count === 4 ? "4주택+" : `${count}주택`}
+                            </Button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-[10px] font-bold text-slate-500 uppercase">지역 구분</Label>
+                        <div className="grid grid-cols-2 gap-1">
+                          <Button
+                            variant={regionType === "NORMAL" ? "default" : "outline"}
+                            size="sm"
+                            className="h-7 text-[10px]"
+                            onClick={() => setRegionType("NORMAL")}
+                          >
+                            비조정대상지역
+                          </Button>
+                          <Button
+                            variant={regionType === "ADJUSTED" ? "default" : "outline"}
+                            size="sm"
+                            className="h-7 text-[10px]"
+                            onClick={() => setRegionType("ADJUSTED")}
+                          >
+                            조정대상지역
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <Button 
                     variant={isAutoTax ? "default" : "outline"} 
                     size="sm" 
@@ -403,16 +412,12 @@ export default function App() {
                   value={appraisalValue} 
                   onChange={setAppraisalValue} 
                   description="법원에서 평가한 물건의 가치입니다."
-                  max={stableMax}
-                  step={priceStep}
                 />
                 <NumericInput 
                   label="최저매각가격" 
                   value={minBidPrice} 
                   onChange={setMinBidPrice} 
                   description="이번 회차에서 입찰 가능한 최소 금액입니다."
-                  max={stableMax}
-                  step={priceStep}
                 />
                 <Separator />
                 <NumericInput 
@@ -420,26 +425,15 @@ export default function App() {
                   value={bidPrice} 
                   onChange={setBidPrice} 
                   description="본인이 입찰하고자 하는 금액입니다."
-                  max={stableMax}
-                  step={priceStep}
                 />
                 
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <Label className="text-sm font-medium text-slate-700">대출 비율 (LTV)</Label>
-                    <span className="text-blue-600 font-bold">{isNaN(loanRatio) ? 0 : loanRatio}%</span>
-                  </div>
-                  <div className="pt-3 pb-2">
-                    <Slider 
-                      value={[isNaN(loanRatio) ? 0 : loanRatio]} 
-                      onValueChange={(v) => !isNaN(v?.[0]) && setLoanRatio(v[0])} 
-                      min={0}
-                      max={95} 
-                      step={5} 
-                      className="[&_[data-slot=slider-range]]:bg-sky-400 [&_[data-slot=slider-track]]:bg-sky-100"
-                    />
-                  </div>
-                </div>
+                <NumericInput 
+                  label="대출 비율 (LTV)" 
+                  value={loanRatio} 
+                  onChange={setLoanRatio} 
+                  suffix="%" 
+                  isPercentage
+                />
 
                 <div className="grid grid-cols-2 gap-4">
                   <NumericInput 
@@ -448,16 +442,12 @@ export default function App() {
                     onChange={setInterestRate} 
                     suffix="%" 
                     isPercentage
-                    max={15}
-                    step={0.1}
                   />
                   <NumericInput 
                     label="보유 기간" 
                     value={holdingPeriod} 
                     onChange={setHoldingPeriod} 
                     suffix="개월" 
-                    max={36}
-                    step={1}
                   />
                 </div>
 
@@ -470,8 +460,6 @@ export default function App() {
                     onChange={setTaxRate} 
                     suffix="%" 
                     isPercentage
-                    max={15}
-                    step={0.1}
                   />
                   <NumericInput 
                     label="법무/기타" 
@@ -479,8 +467,6 @@ export default function App() {
                     onChange={setLegalFeeRate} 
                     suffix="%" 
                     isPercentage
-                    max={5}
-                    step={0.1}
                   />
                 </div>
                 
@@ -488,8 +474,6 @@ export default function App() {
                   label="명도/수리비" 
                   value={repairCosts} 
                   onChange={setRepairCosts} 
-                  max={100000000}
-                  step={1000000}
                 />
                 
                 <Separator />
@@ -499,9 +483,52 @@ export default function App() {
                   value={expectedResalePrice} 
                   onChange={setExpectedResalePrice} 
                   description="보유 기간 후 매도할 때의 예상 가격입니다."
-                  max={stableMax}
-                  step={priceStep}
                 />
+                <Separator />
+                
+                <div className="space-y-4 pt-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    <Info className="w-3.5 h-3.5" />
+                    2026 취득세율 정보
+                  </div>
+                  
+                  <div className="overflow-hidden rounded-xl border border-slate-100 text-[10px]">
+                    <div className="grid grid-cols-3 bg-slate-100 p-2 font-bold text-slate-600 border-b border-slate-100">
+                      <div>구분</div>
+                      <div className="text-center">비조정지역</div>
+                      <div className="text-center">조정지역</div>
+                    </div>
+                    <div className="grid grid-cols-3 p-2 border-b border-slate-50 bg-white items-center">
+                      <div className="font-medium">1주택</div>
+                      <div className="text-center text-blue-600">1~3%</div>
+                      <div className="text-center text-blue-600">1~3%</div>
+                    </div>
+                    <div className="grid grid-cols-3 p-2 border-b border-slate-50 bg-white items-center">
+                      <div className="font-medium">2주택</div>
+                      <div className="text-center">1~3%</div>
+                      <div className="text-center text-red-500 font-bold">8% (중과)</div>
+                    </div>
+                    <div className="grid grid-cols-3 p-2 border-b border-slate-50 bg-white items-center">
+                      <div className="font-medium">3주택</div>
+                      <div className="text-center text-red-500 font-bold">8%</div>
+                      <div className="text-center text-red-500 font-black italic">12%</div>
+                    </div>
+                    <div className="grid grid-cols-3 p-2 bg-white items-center">
+                      <div className="font-medium">4주택+ / 법인</div>
+                      <div className="text-center text-red-500 font-black">12%</div>
+                      <div className="text-center text-red-500 font-black">12%</div>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 p-3 rounded-xl space-y-2 border border-slate-100">
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      📌 <span className="font-bold">기타 부동산:</span> 상가/토지/오피스텔 <span className="text-slate-800 font-bold">4.6%</span>, 농지 <span className="text-slate-800 font-bold">3.4%</span> (고정세율)
+                    </p>
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      📌 <span className="font-bold">기본세율(1~3%) 구간:</span> 6억 이하(1%), 6~9억(비례계산), 9억 초과(3%)
+                    </p>
+                  </div>
+                </div>
               </CardContent>
               <CardFooter className="bg-slate-50 p-4 border-t">
                 <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -513,46 +540,46 @@ export default function App() {
           </div>
 
           {/* Right: Analysis */}
-          <div className="lg:col-span-8 space-y-8">
+          <div className="lg:col-span-8 space-y-6">
             
             {/* Quick Stats */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Card className="bg-white border-none shadow-md">
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-blue-50 text-blue-600 rounded-lg">
-                      <Home className="w-5 h-5" />
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                      <Home className="w-4 h-4" />
                     </div>
-                    <span className="text-sm font-medium text-slate-500">총 취득 비용</span>
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">총 취득 비용</span>
                   </div>
-                  <div className="text-2xl font-bold">
+                  <div className="text-xl font-bold">
                     {new Intl.NumberFormat('ko-KR').format(results.totalAcquisitionCost)}원
                   </div>
                 </CardContent>
               </Card>
               <Card className="bg-white border-none shadow-md">
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-amber-50 text-amber-600 rounded-lg">
-                      <DollarSign className="w-5 h-5" />
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
+                      <Coins className="w-4 h-4" />
                     </div>
-                    <span className="text-sm font-medium text-slate-500">필요 실투자금</span>
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">필요 실투자금</span>
                   </div>
-                  <div className="text-2xl font-bold">
+                  <div className="text-xl font-bold">
                     {new Intl.NumberFormat('ko-KR').format(results.equityNeeded)}원
                   </div>
                 </CardContent>
               </Card>
               <Card className="bg-white border-none shadow-md">
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
-                      <TrendingUp className="w-5 h-5" />
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-2 mb-1" title="KRW">
+                    <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
+                      <TrendingUp className="w-4 h-4" />
                     </div>
-                    <span className="text-sm font-medium text-slate-500">예상 순이익</span>
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">예상 순이익</span>
                   </div>
                   <div className={cn(
-                    "text-2xl font-bold",
+                    "text-xl font-bold",
                     results.totalProfit >= 0 ? "text-emerald-600" : "text-red-600"
                   )}>
                     {new Intl.NumberFormat('ko-KR').format(results.totalProfit)}원
@@ -561,220 +588,181 @@ export default function App() {
               </Card>
             </div>
 
-            <Tabs defaultValue="summary" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 mb-8 bg-slate-200/50 p-1 rounded-xl">
-                <TabsTrigger value="summary" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                  상세 분석 리포트
-                </TabsTrigger>
-                <TabsTrigger value="charts" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">
-                  비용 구조 시각화
-                </TabsTrigger>
-              </TabsList>
-              
-              <AnimatePresence mode="wait">
-                <TabsContent value="summary">
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="grid grid-cols-1 md:grid-cols-2 gap-8"
-                  >
-                    <div className="space-y-6">
-                      <div className="space-y-2">
-                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <ChevronRight className="w-4 h-4 text-blue-500" />
-                          취득 및 부대비용
-                        </h3>
-                        <div className="bg-white rounded-2xl p-2 shadow-sm border border-slate-100">
-                          <ResultItem label="낙찰가" value={results.bidPrice} />
-                          <ResultItem label="취득세" value={results.acquisitionTax} subValue={`${taxRate}% 적용`} />
-                          <ResultItem label="법무 및 기타비용" value={results.legalFees} subValue={`${legalFeeRate}% 적용`} />
-                          <ResultItem label="명도 및 수리비" value={results.repairCosts} />
-                          <Separator className="my-2" />
-                          <ResultItem label="총 취득가액" value={results.totalAcquisitionCost} highlight />
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+              {/* Detailed Reports */}
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <ChevronRight className="w-4 h-4 text-blue-500" />
+                    취득 및 금융 비용 상세
+                  </h3>
+                  <div className="bg-white rounded-2xl p-2 shadow-sm border border-slate-100 flex flex-col gap-1">
+                    <ResultItem label="낙찰가" value={results.bidPrice} />
+                    <ResultItem label="취득세" value={results.acquisitionTax} subValue={`${taxRate}% 적용`} />
+                    <ResultItem label="금융(이자)" value={results.totalInterest} subValue={`${holdingPeriod}개월`} />
+                    <ResultItem label="수리/명도" value={results.repairCosts} />
+                    <Separator className="my-1" />
+                    <ResultItem label="총 취득가" value={results.totalAcquisitionCost} highlight />
+                    <ResultItem label="실투자금" value={results.equityNeeded} subValue="자기자본" />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                    <ChevronRight className="w-4 h-4 text-blue-500" />
+                    수익성 분석 시각화
+                  </h3>
+                  <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-4">
+                    <div className="flex justify-between items-end">
+                      <div>
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">예상 매도가</div>
+                        <div className="text-xl font-black">{new Intl.NumberFormat('ko-KR').format(results.expectedResalePrice)}원</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">손익분기</div>
+                        <div className="text-xs font-medium text-slate-600">{new Intl.NumberFormat('ko-KR').format(results.breakEvenPrice)}원</div>
+                      </div>
+                    </div>
+                    
+                    <div className="relative h-3 bg-slate-100 rounded-full overflow-hidden">
+                      <div 
+                        className="absolute top-0 left-0 h-full bg-blue-500 transition-all duration-500"
+                        style={{ width: `${Math.min(100, (results.totalAcquisitionCost / results.expectedResalePrice) * 100)}%` }}
+                      />
+                      <div 
+                        className="absolute top-0 left-0 h-full bg-amber-400 transition-all duration-500"
+                        style={{ 
+                          left: `${(results.totalAcquisitionCost / results.expectedResalePrice) * 100}%`,
+                          width: `${Math.min(100 - (results.totalAcquisitionCost / results.expectedResalePrice) * 100, (results.totalInterest / results.expectedResalePrice) * 100)}%` 
+                        }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9px] text-slate-400 font-bold">
+                      <span>취득원가</span>
+                      <span>이자비용</span>
+                      <span>수익구간</span>
+                    </div>
+
+                    <Separator />
+
+                    <div className="flex justify-between items-center">
+                      <div className="space-y-0.5">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">최종 예상 수익</div>
+                        <div className={cn(
+                          "text-xl font-black",
+                          results.totalProfit >= 0 ? "text-emerald-600" : "text-red-600"
+                        )}>
+                          {new Intl.NumberFormat('ko-KR').format(results.totalProfit)}원
                         </div>
                       </div>
-
-                      <div className="space-y-2">
-                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <ChevronRight className="w-4 h-4 text-blue-500" />
-                          금융 비용 (대출)
-                        </h3>
-                        <div className="bg-white rounded-2xl p-2 shadow-sm border border-slate-100">
-                          <ResultItem label="대출 금액" value={results.loanAmount} subValue={`낙찰가의 ${loanRatio}%`} />
-                          <ResultItem label="월 이자 비용" value={results.monthlyInterest} subValue={`연 ${interestRate}%`} />
-                          <ResultItem label="총 이자 비용" value={results.totalInterest} subValue={`${holdingPeriod}개월 보유 기준`} />
-                          <Separator className="my-2" />
-                          <ResultItem label="실투자금 (자기자본)" value={results.equityNeeded} highlight />
+                      <div className="text-right space-y-0.5">
+                        <div className="text-[10px] text-slate-400 font-bold uppercase">수익률 (ROI)</div>
+                        <div className={cn(
+                          "text-lg font-black",
+                          results.roi >= 0 ? "text-emerald-600" : "text-red-600"
+                        )}>
+                          {results.roi.toFixed(2)}%
                         </div>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
 
-                    <div className="space-y-6">
-                      <div className="space-y-2">
-                        <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <ChevronRight className="w-4 h-4 text-blue-500" />
-                          수익성 분석
-                        </h3>
-                        <div className="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-4">
-                          <div className="flex justify-between items-end">
-                            <div>
-                              <div className="text-xs text-slate-400 font-bold">예상 매도가</div>
-                              <div className="text-2xl font-black">{new Intl.NumberFormat('ko-KR').format(results.expectedResalePrice)}원</div>
-                            </div>
-                            <div className="text-right">
-                              <div className="text-xs text-slate-400 font-bold">손익분기점</div>
-                              <div className="text-sm font-medium text-slate-600">{new Intl.NumberFormat('ko-KR').format(results.breakEvenPrice)}원</div>
-                            </div>
-                          </div>
-                          
-                          <div className="relative h-4 bg-slate-100 rounded-full overflow-hidden">
-                            <div 
-                              className="absolute top-0 left-0 h-full bg-blue-500 transition-all duration-500"
-                              style={{ width: `${Math.min(100, (results.totalAcquisitionCost / results.expectedResalePrice) * 100)}%` }}
-                            />
-                            <div 
-                              className="absolute top-0 left-0 h-full bg-amber-400 transition-all duration-500"
-                              style={{ 
-                                left: `${(results.totalAcquisitionCost / results.expectedResalePrice) * 100}%`,
-                                width: `${Math.min(100 - (results.totalAcquisitionCost / results.expectedResalePrice) * 100, (results.totalInterest / results.expectedResalePrice) * 100)}%` 
-                              }}
-                            />
-                          </div>
-                          <div className="flex justify-between text-[10px] text-slate-400 font-bold">
-                            <span>취득원가</span>
-                            <span>이자비용</span>
-                            <span>수익구간</span>
-                          </div>
-
-                          <Separator />
-
-                          <div className="space-y-2">
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm font-medium text-slate-600">최종 예상 수익</span>
-                              <span className={cn(
-                                "text-2xl font-black",
-                                results.totalProfit >= 0 ? "text-emerald-600" : "text-red-600"
-                              )}>
-                                {new Intl.NumberFormat('ko-KR').format(results.totalProfit)}원
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center">
-                              <span className="text-sm font-medium text-slate-600">자기자본 수익률 (ROI)</span>
-                              <span className={cn(
-                                "text-xl font-black",
-                                results.roi >= 0 ? "text-emerald-600" : "text-red-600"
-                              )}>
-                                {results.roi.toFixed(2)}%
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <Card className="bg-blue-600 text-white border-none shadow-lg overflow-hidden relative">
-                        <div className="absolute top-0 right-0 p-4 opacity-10">
-                          <CalcIcon className="w-24 h-24" />
-                        </div>
-                        <CardHeader>
-                          <CardTitle className="text-lg">투자 의견</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <p className="text-blue-100 text-sm leading-relaxed">
-                            {results.roi > 20 
-                              ? "매우 매력적인 수익률입니다. 명도 리스크와 급매가격을 다시 한번 확인 후 입찰을 권장합니다."
-                              : results.roi > 10 
-                              ? "안정적인 수익권입니다. 인근 유사 물건의 최근 낙찰가율을 분석하여 경쟁력을 확보하세요."
-                              : results.roi > 0 
-                              ? "수익이 낮거나 리스크 대비 보상이 적을 수 있습니다. 비용 절감 방안이나 매도가 상향 가능성을 검토하세요."
-                              : "현재 조건으로는 손실이 예상됩니다. 입찰가를 낮추거나 다른 물건을 검토하는 것이 좋습니다."}
-                          </p>
-                        </CardContent>
-                        <CardFooter>
-                          <Button variant="secondary" className="w-full bg-white text-blue-600 hover:bg-blue-50 font-bold">
-                            리포트 PDF 저장하기
-                            <ArrowRight className="w-4 h-4 ml-2" />
-                          </Button>
-                        </CardFooter>
-                      </Card>
+              {/* Visualization Column */}
+              <div className="space-y-4">
+                <Card className="bg-white border-none shadow-sm overflow-hidden h-full flex flex-col">
+                  <CardHeader className="py-4">
+                    <CardTitle className="text-[11px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <PieChartIcon className="w-4 h-4 text-blue-500" />
+                      비용 구조 시각화
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="flex-1 flex flex-col justify-center min-h-[250px] p-2">
+                    <div className="h-[200px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={chartData}
+                            cx="50%"
+                            cy="50%"
+                            innerRadius={45}
+                            outerRadius={65}
+                            paddingAngle={5}
+                            dataKey="value"
+                            isAnimationActive={false}
+                          >
+                            {chartData.map((entry, index) => (
+                              <Cell key={`pie-cell-${entry.name}`} fill={COLORS[index % COLORS.length]} />
+                            ))}
+                          </Pie>
+                          <RechartsTooltip 
+                            formatter={(value: number) => `${new Intl.NumberFormat('ko-KR').format(value)}원`}
+                          />
+                        </PieChart>
+                      </ResponsiveContainer>
                     </div>
-                  </motion.div>
-                </TabsContent>
-
-                <TabsContent value="charts">
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className="grid grid-cols-1 md:grid-cols-2 gap-8"
-                  >
-                    <Card className="bg-white border-none shadow-sm h-[400px]">
-                      <CardHeader>
-                        <CardTitle className="text-sm font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                          <PieChartIcon className="w-4 h-4 text-blue-500" />
-                          총 지출 구조
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="h-full pb-12">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie
-                              data={chartData}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={60}
-                              outerRadius={80}
-                              paddingAngle={5}
-                              dataKey="value"
-                            >
-                              {chartData.map((entry, index) => (
-                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                              ))}
-                            </Pie>
-                            <RechartsTooltip 
-                              formatter={(value: number) => `${new Intl.NumberFormat('ko-KR').format(value)}원`}
-                            />
-                            <Legend verticalAlign="bottom" height={36}/>
-                          </PieChart>
-                        </ResponsiveContainer>
-                      </CardContent>
-                    </Card>
-
-                    <div className="space-y-4">
-                      <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest">비용 상세 비중</h3>
-                      <div className="space-y-3">
-                        {chartData.map((item, idx) => {
-                          const total = chartData.reduce((acc, curr) => acc + curr.value, 0);
-                          const percentage = ((item.value / total) * 100).toFixed(1);
-                          return (
-                            <div key={item.name} className="space-y-1">
-                              <div className="flex justify-between text-xs font-medium">
-                                <span>{item.name}</span>
-                                <span className="text-slate-400">{percentage}%</span>
-                              </div>
-                              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                                <motion.div 
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${percentage}%` }}
-                                  className="h-full rounded-full"
-                                  style={{ backgroundColor: COLORS[idx % COLORS.length] }}
-                                />
-                              </div>
+                    <div className="px-4 pb-4 space-y-2">
+                      {chartData.slice(0, 4).map((item, idx) => {
+                        const total = chartData.reduce((acc, curr) => acc + curr.value, 0);
+                        const percentage = ((item.value / total) * 100).toFixed(1);
+                        return (
+                          <div key={`cost-detail-${item.name}`} className="space-y-1">
+                            <div className="flex justify-between text-[10px] font-medium">
+                              <span>{item.name}</span>
+                              <span className="text-slate-400">{percentage}%</span>
                             </div>
-                          );
-                        })}
-                      </div>
-                      <div className="mt-8 p-4 bg-slate-100 rounded-xl text-xs text-slate-500 leading-relaxed">
-                        <div className="font-bold mb-1 text-slate-700">분석 가이드:</div>
-                        낙찰가가 전체 비용의 대부분을 차지하지만, 취득세와 이자비용 또한 무시할 수 없는 수준입니다. 
-                        특히 보유 기간이 길어질수록 이자비용 비중이 높아지므로 빠른 명도와 매도가 중요합니다.
-                      </div>
+                            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full rounded-full"
+                                style={{ 
+                                  width: `${percentage}%`,
+                                  backgroundColor: COLORS[idx % COLORS.length] 
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  </motion.div>
-                </TabsContent>
-              </AnimatePresence>
-            </Tabs>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+
+            {/* Investment Opinion - Now at the Bottom */}
+            <Card className="bg-slate-900 text-white border-none shadow-xl overflow-hidden relative">
+              <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
+                <CalcIcon className="w-32 h-32" />
+              </div>
+              <div className="flex flex-col md:flex-row items-center">
+                <div className="flex-1 p-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="p-1.5 bg-blue-500/20 text-blue-400 rounded-lg">
+                      <TrendingUp className="w-4 h-4" />
+                    </div>
+                    <CardTitle className="text-base">AI 투자 의견</CardTitle>
+                  </div>
+                  <p className="text-slate-300 text-sm leading-relaxed max-w-2xl">
+                    {results.roi > 20 
+                      ? "매우 매력적인 수익률입니다. 명도 리스크와 급매가격을 다시 한번 확인 후 입찰을 권장합니다."
+                      : results.roi > 10 
+                      ? "안정적인 수익권입니다. 인근 유사 물건의 최근 낙찰가율을 분석하여 경쟁력을 확보하세요."
+                      : results.roi > 0 
+                      ? "수익이 낮거나 리스크 대비 보상이 적을 수 있습니다. 비용 절감 방안이나 매도가 상향 가능성을 검토하세요."
+                      : "현재 조건으로는 손실이 예상됩니다. 입찰가를 낮추거나 다른 물건을 검토하는 것이 좋습니다."}
+                  </p>
+                </div>
+                <div className="p-6 md:border-l md:border-slate-800 w-full md:w-auto">
+                  <Button variant="default" className="w-full bg-blue-600 hover:bg-blue-500 font-bold whitespace-nowrap">
+                    상세 리포트 PDF 저장
+                    <ArrowRight className="w-4 h-4 ml-2" />
+                  </Button>
+                </div>
+              </div>
+            </Card>
           </div>
+
         </div>
         
         {/* Footer */}
